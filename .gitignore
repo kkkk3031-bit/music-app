@@ -1,0 +1,18 @@
+# server
+server/node_modules/
+server/data/
+server/.env
+*.log
+
+# android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/*.iml
+android/captures/
+*.keystore
+*.jks
+
+.DS_Store

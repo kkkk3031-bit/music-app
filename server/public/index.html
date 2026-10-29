@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e0e11">
+  <title>Cadence</title>
+  <link rel="icon" href="/img/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/app.css">
+  <script type="module" src="/js/main.js"></script>
+</head>
+<body>
+  <div id="auth" class="auth" hidden></div>
+
+  <div id="shell" class="shell" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="#/home"><img src="/img/logo.svg" alt=""><span>Cadence</span></a>
+      <nav class="nav" id="nav"></nav>
+      <div class="sidebar-section">
+        <div class="sidebar-head">
+          <span>Your playlists</span>
+          <button class="icon-btn small" id="new-playlist" title="New playlist" aria-label="New playlist"></button>
+        </div>
+        <div class="sidebar-playlists" id="sidebar-playlists"></div>
+      </div>
+    </aside>
+
+    <main class="main" id="main">
+      <header class="topbar">
+        <div class="topbar-room" id="room-badge" hidden></div>
+        <div class="spacer"></div>
+        <button class="user-chip" id="user-chip"></button>
+      </header>
+      <div class="view" id="view"></div>
+    </main>
+
+    <aside class="queue-panel" id="queue-panel" hidden></aside>
+
+    <footer class="player" id="player"></footer>
+    <nav class="bottom-nav" id="bottom-nav"></nav>
+  </div>
+
+  <div id="now-playing" class="now-playing" hidden></div>
+  <div id="overlay-root"></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <audio id="audio" preload="auto"></audio>
+</body>
+</html>
