@@ -218,7 +218,7 @@ input[type="range"]:disabled { cursor: default; }
 .q-item .t-text { min-width: 0; cursor: pointer; }
 
 /* ---------- now playing ---------- */
-.now-playing { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; overflow: hidden; background: #000; animation: rise .25s ease-out; }
+.now-playing { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; overflow: hidden; overflow: clip; background: #000; animation: rise .25s ease-out; }
 @keyframes rise { from { transform: translateY(30px); opacity: 0; } }
 .now-playing .np-bg { position: absolute; inset: -60px; background: center/cover no-repeat; filter: blur(60px) brightness(.45) saturate(1.3); }
 .now-playing > * { position: relative; }
@@ -352,3 +352,21 @@ input[type="range"]:disabled { cursor: default; }
   .toasts { bottom: 140px; }
 }
 @media (min-width: 761px) { .player .mini-progress { display: none; } }
+
+/* lyrics */
+.np-lyrics { width: min(520px, 90vw); height: min(420px, 50vh); display: flex; flex-direction: column; gap: 12px; background: rgba(0, 0, 0, .35); border-radius: 12px; padding: 18px 20px; }
+.np-lyrics > .lrc, .np-lyrics > .plain { flex: 1; overflow-y: auto; position: relative; }
+.np-lyrics .plain { white-space: pre-wrap; font-size: 18px; line-height: 1.6; font-weight: 600; }
+.np-lyrics .lrc p { margin: 0; padding: 6px 0; font-size: 22px; font-weight: 800; color: rgba(255, 255, 255, .45); cursor: pointer; transition: color .2s; }
+.np-lyrics .lrc p.on { color: #fff; }
+.np-lyrics .btn { align-self: flex-start; }
+.np-controls .icon-btn.on { color: var(--accent); }
+.lyrics-edit { height: auto; min-height: 280px; width: min(560px, 80vw); padding: 12px 16px; resize: vertical; font-family: ui-monospace, monospace; font-size: 13px; }
+/* downloads + profile */
+.job .job-right { display: flex; align-items: center; gap: 6px; }
+.job .status.canceled { color: var(--muted); }
+.pw-form { display: grid; gap: 10px; max-width: 360px; margin: 24px 0; }
+/* uploader avatars */
+.card .avatar.card-avatar { width: 100%; height: auto; aspect-ratio: 1; border-radius: 50%; font-size: 48px; object-fit: cover; }
+.hero .avatar.hero-avatar { width: 200px; height: 200px; border-radius: 50%; font-size: 80px; flex: none; object-fit: cover; box-shadow: 0 10px 40px rgba(0, 0, 0, .5); }
+@media (max-width: 760px) { .hero .avatar.hero-avatar { width: 140px; height: 140px; font-size: 56px; } }

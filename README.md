@@ -2,10 +2,12 @@
 
 A self-hosted, Spotify-style music app: a Node.js server with a web player, and a native Android client.
 
-- **Library and player:** upload MP3, M4A, AAC, OGG, Opus, FLAC or WAV files. Tags and cover art are read automatically. The player has a queue, shuffle, repeat, and range-based streaming so seeking is instant.
-- **Playlists:** create, rename, add a cover, drag to reorder (web), remove songs. Liked Songs and recently played are included.
+- **Library and player:** every listener can upload MP3, M4A, AAC, OGG, Opus, FLAC or WAV files (web or Android). Tags, cover art and embedded lyrics are read automatically, and byte-identical files are detected so the library has no duplicates. The player has a queue, shuffle, repeat, range-based streaming so seeking is instant, and preloads the next song before the current one ends.
+- **Uploads per listener:** Library → Uploads shows your own uploads and a page for every other listener who has uploaded music.
+- **Lyrics:** plain or synced (LRC `[mm:ss.xx]`). Synced lyrics highlight the current line and tap-to-seek. The uploader can add or edit them from the now-playing screen.
+- **Playlists:** create, rename, add a cover, drag to reorder (web), remove songs, copy a share link (others get a read-only view). Liked Songs and recently played are included.
 - **Search and streaming:** one search covers your library, the [Internet Archive](https://archive.org) (no key needed) and [Jamendo](https://www.jamendo.com) (needs a free key). Online results stream through the server and can be saved to playlists.
-- **Downloader:** paste an archive.org item, a Jamendo track, or a direct audio link, and it's imported into the library. Progress updates live. Other links fall back to `yt-dlp` if it's installed.
+- **Downloader:** paste an archive.org item, a Jamendo track, or a direct audio link, and it's imported into the library. Progress updates live, and downloads can be canceled or retried. Other links fall back to `yt-dlp` if it's installed.
 - **Listen together:** the host creates a room and friends join with a 6-letter code. Everyone hears the same moment, with drift correction. The host controls playback, anyone can queue songs, and there's live chat. If the host leaves, host passes to the longest-present listener.
 
 Only free and legal sources are built in. Cadence isn't affiliated with Spotify.
@@ -24,7 +26,7 @@ android/  Kotlin · Jetpack Compose · Media3 (ExoPlayer + MediaSessionService) 
 cd server
 npm install
 cp .env.example .env      # optional
-npm start                 # http://localhost:3020
+npm start                 # http://localhost:3030
 ```
 
 Open the URL, create an account, and upload music or search. Data is stored in `server/data/` (it's in `.gitignore`).
@@ -35,10 +37,12 @@ On this machine it runs under PM2 as `music-app`. Start it with `pm2 start ecosy
 
 ```bash
 cd server
-npm test              # 16 API/socket tests: auth, rate limits, uploads, Range 206, path traversal,
-                      # SSRF, playlists, room state machine, live two-client room sync
-npm run test:e2e      # real headless Chromium: two users go through upload → play → queue →
-                      # playlist (drag reorder) → like → search → room sync, seek, pause, chat, host hand-off
+npm test              # 22 API/socket tests: auth, password change, rate limits, uploads + dedupe,
+                      # lyrics, per-user uploads, Range 206, path traversal, SSRF, playlists,
+                      # download cancel/retry, room state machine, live two-client room sync
+npm run test:e2e      # real headless Chromium: two users go through upload (+ duplicate) → play →
+                      # lyrics → queue → playlist (drag reorder) → like → search → room sync, seek,
+                      # pause, chat, host hand-off → uploads pages → share link → password change
 ```
 
 The first E2E run needs `npx playwright install chromium-headless-shell`.
@@ -50,7 +54,7 @@ cd android
 ./gradlew assembleDebug   # → app/build/outputs/apk/debug/app-debug.apk
 ```
 
-`local.properties` must point `sdk.dir` at the Android SDK. On the login screen, enter the server URL. The default is `http://10.0.2.2:3020`, which is the host machine as seen from the emulator. Playback runs in a Media3 `MediaSessionService`, so it continues in the background with notification and lock-screen controls.
+`local.properties` must point `sdk.dir` at the Android SDK. On the login screen, enter the server URL. The default is `http://10.0.2.2:3030`, which is the host machine as seen from the emulator. Playback runs in a Media3 `MediaSessionService`, so it continues in the background with notification and lock-screen controls.
 
 Verified on the API 28 emulator: login, home, playlist, background playback (media session PLAYING), and joining a room created from the web. In that test the phone tracked the host's position to within about 1 s.
 
@@ -63,11 +67,15 @@ All endpoints are under `/api`. Auth uses `Authorization: Bearer <token>`, or `?
 | POST | `/auth/register`, `/auth/login` | `{username, password}` → `{token, user}` (rate-limited) |
 | GET | `/me`, `/home`, `/me/likes` | profile, home feed, liked songs |
 | POST | `/me/avatar`, `/me/played` | avatar image, record a play |
-| GET/POST | `/tracks` | list (`?sort=recent\|title\|artist`), multipart upload (`files`) |
+| POST | `/me/password` | `{currentPassword, newPassword}` (rate-limited) |
+| GET | `/users` | listeners who uploaded music, with `uploadCount` |
+| GET | `/users/:username` | `{user, uploads, playlists}` for one listener |
+| GET/POST | `/tracks` | list (`?sort=recent\|title\|artist`), multipart upload (`files`) → `{tracks, errors, duplicates}` |
 | POST | `/tracks/remote` | save an online search result as a playable track |
 | GET | `/tracks/:id/stream` | audio, supports Range |
 | PUT/DELETE | `/tracks/:id/like` | like / unlike |
 | DELETE | `/tracks/:id` | uploader only |
+| GET/PUT | `/tracks/:id/lyrics` | `{lyrics, synced}`; PUT `{lyrics}` is uploader only |
 | GET | `/albums[/:key]`, `/artists[/:name]` | grouped library |
 | GET/POST | `/playlists` | mine (`?scope=all` for everyone's) / create |
 | GET/PATCH/DELETE | `/playlists/:id` | view / rename / delete |
@@ -76,6 +84,7 @@ All endpoints are under `/api`. Auth uses `Authorization: Bearer <token>`, or `?
 | POST | `/playlists/:id/cover` | cover image |
 | GET | `/search?q=` | `{local, playlists, archive, jamendo, errors}` |
 | GET/POST | `/downloads` | jobs / enqueue `{url}` |
+| POST | `/downloads/:id/cancel`, `/downloads/:id/retry` | stop a queued/running job, re-queue a failed/canceled one |
 | GET | `/health` | status and enabled features |
 
 Room events go over Socket.IO, with an ack on each: `room:create`, `room:join`, `room:leave`, `room:play`, `room:pause`, `room:resume`, `room:seek`, `room:next`, `room:queue:add`, `room:queue:remove`, `room:chat`, and `time` for clock sync. The server pushes `room:state`, `room:chat` and `download:update`.

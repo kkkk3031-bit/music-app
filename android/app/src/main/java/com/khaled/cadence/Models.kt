@@ -86,6 +86,13 @@ data class DownloadJob(val id: String, val title: String, val status: String, va
 fun JSONObject.optStringOrNull(key: String): String? =
     if (isNull(key)) null else optString(key).takeIf { it.isNotEmpty() }
 
+/** A listener who has uploaded music (GET /api/users). */
+data class Uploader(val id: String, val username: String, val avatar: String?, val uploadCount: Int) {
+    companion object {
+        fun from(o: JSONObject) = Uploader(o.getString("id"), o.getString("username"), o.optString("avatar").ifEmpty { null }, o.optInt("uploadCount"))
+    }
+}
+
 fun <T> JSONArray.mapObjects(fn: (JSONObject) -> T): List<T> = (0 until length()).map { fn(getJSONObject(it)) }
 
 fun formatTime(seconds: Long): String {

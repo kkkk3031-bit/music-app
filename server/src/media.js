@@ -1,7 +1,9 @@
 // Turning an audio file on disk into a library track: validate the type, read
 // tags + embedded cover art, move it into the media dir under a generated name.
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { parseFile } from 'music-metadata';
 import { newId } from './db.js';
 
@@ -33,16 +35,61 @@ function titleFromName(name) {
   return path.basename(name || 'Untitled', path.extname(name || '')).replace(/[_]+/g, ' ').trim() || 'Untitled';
 }
 
+const MAX_LYRICS = 20000;
+const LRC_LINE = /^\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]/m;
+
+export function hashFile(file) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    createReadStream(file).on('error', reject).on('data', (d) => h.update(d)).on('end', () => resolve(h.digest('hex')));
+  });
+}
+
+/** Normalises user/tag lyrics; returns null when empty. */
+export function cleanLyrics(text) {
+  const s = String(text ?? '').replace(/\r\n?/g, '\n').trim().slice(0, MAX_LYRICS);
+  return s || null;
+}
+
+export const isSyncedLyrics = (text) => Boolean(text && LRC_LINE.test(text));
+
+const lrcStamp = (ms) => {
+  const m = Math.floor(ms / 60000);
+  const sec = ((ms % 60000) / 1000).toFixed(2).padStart(5, '0');
+  return `[${String(m).padStart(2, '0')}:${sec}]`;
+};
+
+// Tag lyrics → plain string; synced (SYLT, ms timestamps) become LRC lines.
+function lyricsFromTags(tags = []) {
+  for (const l of tags) {
+    if (typeof l === 'string' && l.trim()) return cleanLyrics(l);
+    if (l?.syncText?.length && l.timeStampFormat === 2) {
+      return cleanLyrics(l.syncText.map((x) => `${lrcStamp(x.timestamp || 0)}${x.text}`).join('\n'));
+    }
+    if (l?.text?.trim()) return cleanLyrics(l.text);
+  }
+  return null;
+}
+
 /**
  * Parse + move `tmpPath` into the library. `hints` can supply title/artist/etc.
  * that win over missing tags (e.g. from a download source's metadata).
  * Throws (and deletes the tmp file) if the content isn't decodable audio.
+ * If `findByHash` returns a track with identical bytes, that track is returned
+ * as-is (callers detect this via store membership) and the tmp file is removed.
  */
-export async function ingestAudio({ tmpPath, originalName, mime, ownerId, dirs, source = 'upload', hints = {} }) {
+export async function ingestAudio({ tmpPath, originalName, mime, ownerId, dirs, source = 'upload', hints = {}, findByHash = () => null }) {
   const ext = audioExt(originalName, mime);
   if (!ext) {
     await fs.rm(tmpPath, { force: true });
     throw Object.assign(new Error('Unsupported audio format'), { status: 415 });
+  }
+  // Identical bytes already in the library: reuse that track, drop the copy.
+  const hash = await hashFile(tmpPath);
+  const dup = findByHash(hash);
+  if (dup) {
+    await fs.rm(tmpPath, { force: true });
+    return dup;
   }
   let meta;
   try {
@@ -84,6 +131,8 @@ export async function ingestAudio({ tmpPath, originalName, mime, ownerId, dirs, 
     file,
     mime: AUDIO_TYPES[ext],
     size: stat.size,
+    hash,
+    lyrics: lyricsFromTags(meta.common.lyrics),
     cover,
     createdAt: Date.now(),
   };

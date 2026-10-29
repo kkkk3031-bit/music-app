@@ -77,6 +77,7 @@ import com.khaled.cadence.Playlist
 import com.khaled.cadence.RoomClient
 import com.khaled.cadence.Route
 import com.khaled.cadence.Track
+import com.khaled.cadence.Uploader
 import com.khaled.cadence.mapObjects
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -276,12 +277,20 @@ fun LibraryScreen(open: (Route) -> Unit) {
     var tab by remember { mutableStateOf(0) }
     var playlists by remember { mutableStateOf<List<Playlist>?>(null) }
     var songs by remember { mutableStateOf<List<Track>?>(null) }
+    var myUploads by remember { mutableStateOf<List<Track>?>(null) }
+    var uploaders by remember { mutableStateOf<List<Uploader>>(emptyList()) }
     var creating by remember { mutableStateOf(false) }
     var reload by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(tab, reload) {
-        if (tab == 0) playlists = runCatching { Api.playlists() }.getOrDefault(emptyList())
-        else songs = runCatching { Api.tracks() }.getOrDefault(emptyList())
+        when (tab) {
+            0 -> playlists = runCatching { Api.playlists() }.getOrDefault(emptyList())
+            1 -> {
+                myUploads = runCatching { Api.userUploads(Api.username ?: "") }.getOrDefault(emptyList())
+                uploaders = runCatching { Api.uploaders() }.getOrDefault(emptyList()).filter { it.id != Api.userId }
+            }
+            else -> songs = runCatching { Api.tracks() }.getOrDefault(emptyList())
+        }
     }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -290,7 +299,8 @@ fun LibraryScreen(open: (Route) -> Unit) {
         }
         Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(tab == 0, { tab = 0 }, { Text("Playlists") })
-            FilterChip(tab == 1, { tab = 1 }, { Text("Songs") })
+            FilterChip(tab == 1, { tab = 1 }, { Text("Uploads") })
+            FilterChip(tab == 2, { tab = 2 }, { Text("Songs") })
         }
         LazyColumn(contentPadding = PaddingValues(12.dp)) {
             if (tab == 0) {
@@ -310,6 +320,27 @@ fun LibraryScreen(open: (Route) -> Unit) {
                         Column(Modifier.padding(start = 12.dp)) {
                             Text(p.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text("Playlist · ${p.trackCount} songs", color = Muted, fontSize = 13.sp)
+                        }
+                    }
+                }
+            } else if (tab == 1) {
+                val list = myUploads
+                item { SectionTitle("Your uploads" + (list?.let { " · ${it.size}" } ?: "")) }
+                if (list == null) item { Empty("Loading…") }
+                else if (list.isEmpty()) item { Empty("You haven't uploaded any music yet. Use Import to upload from this phone.") }
+                else {
+                    item { PlayShuffleBar(list) }
+                    itemsIndexed(list) { i, t -> TrackRow(t, { Playback.playList(list, i) }) }
+                }
+                if (uploaders.isNotEmpty()) {
+                    item { SectionTitle("Uploads by other listeners") }
+                    items(uploaders) { u ->
+                        Row(Modifier.fillMaxWidth().clickable { open(Route.UserUploads(u.username)) }.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Cover(u.avatar, 56.dp, CircleShape)
+                            Column(Modifier.padding(start = 12.dp)) {
+                                Text(u.username, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("${u.uploadCount} upload" + (if (u.uploadCount == 1) "" else "s"), color = Muted, fontSize = 13.sp)
+                            }
                         }
                     }
                 }
@@ -407,6 +438,24 @@ fun LikedScreen(back: () -> Unit) {
         val list = tracks
         if (list == null) item { Empty("Loading…") }
         else if (list.isEmpty()) item { Empty("Songs you like will appear here.") }
+        else {
+            item { PlayShuffleBar(list) }
+            itemsIndexed(list) { i, t -> TrackRow(t, { Playback.playList(list, i) }) }
+        }
+    }
+}
+
+@Composable
+fun UserUploadsScreen(username: String, back: () -> Unit) {
+    var tracks by remember { mutableStateOf<List<Track>?>(null) }
+    LaunchedEffect(username) { tracks = runCatching { Api.userUploads(username) }.getOrDefault(emptyList()) }
+    LazyColumn(contentPadding = PaddingValues(12.dp)) {
+        item { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } }
+        item { Text("Uploads", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp)) }
+        item { Text(username, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(4.dp)) }
+        val list = tracks
+        if (list == null) item { Empty("Loading…") }
+        else if (list.isEmpty()) item { Empty("$username hasn't uploaded any music yet.") }
         else {
             item { PlayShuffleBar(list) }
             itemsIndexed(list) { i, t -> TrackRow(t, { Playback.playList(list, i) }) }

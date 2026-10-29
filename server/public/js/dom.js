@@ -50,6 +50,7 @@ const P = {
   link: '<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
+  lyrics: '<path d="M4 6h16M4 10h16M4 14h11M4 18h7"/><circle cx="18" cy="18" r="2.2"/><path d="M20.2 18V11"/>',
   sync: '<path d="M21 12a9 9 0 0 1-15.5 6.2M3 12A9 9 0 0 1 18.5 5.8"/><path d="M21 4v5h-5M3 20v-5h5"/>',
 };
 const FILLED = {

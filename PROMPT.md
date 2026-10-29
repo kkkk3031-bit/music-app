@@ -9,7 +9,7 @@ Build a Spotify-style music app in `/home/dev/music-app`. It should have a Node.
 ## Structure
 - `music-app/server/`: Node 22 with Express, Socket.IO, and multer. Use pure JS with no native dependencies; follow `talk-app` as a reference. Store data in JSON files or SQLite through a pure-JS driver. It serves the REST API, the WebSocket rooms, and the web player from `public/`.
 - `music-app/android/`: Kotlin with Jetpack Compose and Media3 ExoPlayer. Run the Gradle wrapper with `local.properties` pointing at `/home/dev/android-sdk`, and set compileSdk to 36. Use `kdl-app` / `backup-app` as references.
-- Port **3020**. Add a `music-app` entry to `/home/dev/ecosystem.config.js` matching the existing entries. Do not touch or print the secret in that file.
+- Port **3030** (3020 is used by snake-web on this machine). Add a `music-app` entry to `/home/dev/ecosystem.config.js` matching the existing entries. Do not touch or print the secret in that file.
 
 ## Features
 1. **Accounts**: register and log in using bcryptjs and JWT. Each user has a profile with an avatar.
@@ -33,7 +33,7 @@ Build a Spotify-style music app in `/home/dev/music-app`. It should have a Node.
 ## Verify before finishing
 1. `cd server && npm install && npm test` passes.
 2. Start the server with PM2 or the Bash tool's `run_in_background`, not nohup. Then curl `/api/health`, upload a sample file, and confirm a Range request returns 206.
-3. `cd android && ./gradlew assembleDebug` succeeds, and the APK has the right package and permissions according to `aapt dump badging`. There is no emulator (no KVM), so don't try to launch one.
+3. `cd android && ./gradlew assembleDebug` succeeds, and the APK has the right package and permissions according to `aapt dump badging`. The emulator works in software mode: `~/bin/android-emu` via run_in_background (~3.5 min boot), host is `10.0.2.2:3030`.
 4. Report honestly what works, what you skipped, and what's untested.
 
 Build it in stages (server core → web player → search/downloader → rooms → Android) and confirm each stage works before moving on.

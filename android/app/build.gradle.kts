@@ -15,7 +15,7 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         // Default server for the emulator (host loopback). Changeable on the login screen.
-        buildConfigField("String", "DEFAULT_SERVER", "\"http://10.0.2.2:3020\"")
+        buildConfigField("String", "DEFAULT_SERVER", "\"http://10.0.2.2:3030\"")
     }
 
     buildTypes {

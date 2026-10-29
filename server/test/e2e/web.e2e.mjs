@@ -54,6 +54,10 @@ try {
   await alice.locator('input[type=file]').setInputFiles(files);
   await alice.getByText('Added 3 song(s).').waitFor({ timeout: 15000 });
 
+  step = 'duplicate upload is detected';
+  await alice.locator('input[type=file]').setInputFiles([files[0]]);
+  await alice.getByText('1 already in the library: Sunrise.wav').waitFor({ timeout: 15000 });
+
   step = 'library songs';
   await alice.goto(`${s.base}/#/library/songs`);
   await alice.locator('.track').nth(2).waitFor();
@@ -165,6 +169,22 @@ try {
   await alice.locator('#now-playing:not([hidden]) .np-info .t-title').waitFor();
   await alice.waitForTimeout(400); // let the open animation finish
   await alice.screenshot({ path: path.join(shots, 'desktop-now-playing.png') });
+
+  step = 'lyrics: add synced lyrics, line follows playback';
+  await alice.getByRole('button', { name: 'Lyrics' }).click();
+  await alice.getByText('No lyrics for this song yet.').waitFor();
+  await alice.getByRole('button', { name: 'Add lyrics' }).click();
+  const lrc = Array.from({ length: 40 }, (_, i) => `[00:${String(i).padStart(2, '0')}.00]Line ${i}`).join('\n');
+  await alice.locator('textarea.lyrics-edit').fill(lrc);
+  await alice.locator('.modal').getByRole('button', { name: 'Save' }).click();
+  await alice.locator('.np-lyrics .lrc p.on').waitFor({ timeout: 10000 });
+  const lineA = await alice.locator('.np-lyrics .lrc p.on').textContent();
+  await alice.locator('.np-lyrics .lrc p', { hasText: /^Line 30$/ }).click();
+  await alice.waitForFunction(() => document.querySelector('.np-lyrics .lrc p.on')?.textContent.match(/^Line (3\d)$/));
+  assert.notEqual(lineA, await alice.locator('.np-lyrics .lrc p.on').textContent());
+  await alice.screenshot({ path: path.join(shots, 'desktop-lyrics.png') });
+  const shift = await alice.evaluate(() => { const el = document.getElementById('now-playing'); return el.scrollTop + el.scrollLeft; });
+  assert.equal(shift, 0, 'lyrics scrolling must not shift the overlay');
   await alice.keyboard.press('Escape');
 
   step = 'home';
@@ -243,6 +263,40 @@ try {
   await bob.locator('.bottom-nav a', { hasText: 'Search' }).waitFor();
   assert.equal(await bob.locator('.sidebar').isVisible(), false);
   await bob.screenshot({ path: path.join(shots, 'mobile-home.png') });
+
+  step = 'playlist share link';
+  await alice.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await alice.goto(`${s.base}/#/library/playlists`);
+  await alice.locator('.card', { hasText: 'Road Trip 2026' }).click();
+  await alice.locator('.hero .kind', { hasText: 'Playlist' }).waitFor();
+  await alice.getByRole('button', { name: 'Copy link' }).click();
+  await alice.getByText('Link copied').waitFor();
+  const link = await alice.evaluate(() => navigator.clipboard.readText());
+  assert.match(link, /\/#\/playlist\/[\w-]+$/);
+  await bob.goto(link);
+  await bob.locator('.hero .kind', { hasText: 'Playlist' }).waitFor();
+  assert.equal(await bob.locator('.action-bar').getByRole('button', { name: 'More options' }).count(), 0, 'non-owner gets read-only view');
+
+  step = 'uploads: bob browses alice\'s uploads';
+  await bob.goto(`${s.base}/#/library/uploads`);
+  await bob.getByText('You haven\'t uploaded any music yet.').waitFor();
+  await bob.locator('.card', { hasText: 'alice' }).filter({ hasText: '3 uploads' }).click();
+  await bob.locator('.hero h1', { hasText: 'alice' }).waitFor();
+  assert.equal(await bob.locator('.track').count(), 3);
+  await bob.screenshot({ path: path.join(shots, 'mobile-user-uploads.png') });
+  await alice.goto(`${s.base}/#/library/uploads`);
+  await alice.getByText('Your uploads · 3').waitFor();
+  assert.equal(await alice.locator('.track').count(), 3);
+
+  step = 'change password';
+  await alice.goto(`${s.base}/#/profile`);
+  await alice.locator('input[aria-label="Current password"]').fill('secret123');
+  await alice.locator('input[aria-label="New password"]').fill('better456');
+  await alice.locator('input[aria-label="Repeat new password"]').fill('better456');
+  await alice.getByRole('button', { name: 'Update password' }).click();
+  await alice.getByText('Password changed').waitFor();
+  s.store.flush();
+  assert.equal((await api(s.base, 'POST', '/api/auth/login', { body: { username: 'alice', password: 'better456' } })).status, 200);
 
   step = 'logout';
   await alice.locator('#user-chip').click();

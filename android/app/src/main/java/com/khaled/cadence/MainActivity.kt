@@ -91,6 +91,7 @@ import com.khaled.cadence.ui.PlaylistScreen
 import com.khaled.cadence.ui.ProfileScreen
 import com.khaled.cadence.ui.RoomsScreen
 import com.khaled.cadence.ui.SearchScreen
+import com.khaled.cadence.ui.UserUploadsScreen
 
 sealed interface Route {
     data object Home : Route
@@ -101,6 +102,7 @@ sealed interface Route {
     data object Liked : Route
     data object Profile : Route
     data class PlaylistDetail(val id: String) : Route
+    data class UserUploads(val username: String) : Route
 }
 
 private data class Tab(val route: Route, val label: String, val icon: ImageVector)
@@ -209,6 +211,7 @@ private fun App(onLogout: () -> Unit) {
                         Route.Liked -> LikedScreen(back)
                         Route.Profile -> ProfileScreen(onLogout)
                         is Route.PlaylistDetail -> PlaylistScreen(r.id, back)
+                        is Route.UserUploads -> UserUploadsScreen(r.username, back)
                     }
                 }
             }

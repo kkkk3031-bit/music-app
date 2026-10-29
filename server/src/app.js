@@ -11,7 +11,8 @@ import multer from 'multer';
 import { Server as IOServer } from 'socket.io';
 import { Store, newId } from './db.js';
 import { createAuth, loadSecret, publicUser, rateLimit } from './auth.js';
-import { ingestAudio, audioExt, IMAGE_TYPES } from './media.js';
+import { createRequire } from 'node:module';
+import { ingestAudio, audioExt, IMAGE_TYPES, cleanLyrics, isSyncedLyrics, hashFile } from './media.js';
 import { safeFetch, hostAllowed } from './net.js';
 import { searchArchive, searchJamendo, STREAM_HOSTS } from './sources.js';
 import { Downloader } from './downloader.js';
@@ -21,6 +22,7 @@ import { attachSockets } from './sockets.js';
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MAX_UPLOAD = 200 * 1024 * 1024;
 const MAX_RECENT = 50;
+const { version: VERSION } = createRequire(import.meta.url)('../package.json');
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 
@@ -40,11 +42,21 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
   const server = http.createServer(app);
   const io = new IOServer(server, { cors: { origin: true } });
   const rooms = new RoomManager();
+  // Byte-identical uploads/downloads reuse the existing library track.
+  const findByHash = (hash) => store.tracks.find((t) => t.type === 'local' && t.hash === hash) || null;
+  // Tracks from before hashing existed get one in the background.
+  (async () => {
+    for (const t of store.tracks.filter((x) => x.type === 'local' && !x.hash)) {
+      t.hash = await hashFile(path.join(dirs.media, path.basename(t.file))).catch(() => null);
+    }
+    store.save();
+  })();
   const downloader = new Downloader({
     store,
     dirs,
     ytdlpPath: ytdlpPath ?? process.env.YTDLP_PATH ?? '/home/dev/bin/yt-dlp',
     onUpdate: (job) => io.to(`user:${job.userId}`).emit('download:update', job),
+    findByHash,
   });
 
   // ---------- serializers ----------
@@ -65,6 +77,7 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
       cover: t.cover,
       owner: { id: t.ownerId, username: userName(t.ownerId) },
       liked: viewer ? viewer.likes.includes(t.id) : false,
+      hasLyrics: Boolean(t.lyrics),
       streamUrl: `/api/tracks/${t.id}/stream`,
       createdAt: t.createdAt,
     };
@@ -154,7 +167,7 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
     res.json({
       ok: true,
       name: 'Cadence',
-      version: '0.1.0',
+      version: VERSION,
       uptime: Math.round(process.uptime()),
       features: { jamendo: Boolean(process.env.JAMENDO_CLIENT_ID), ytdlp: Boolean(downloader.ytdlpPath) },
     });
@@ -179,6 +192,11 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
     req.user.avatar = url;
     store.save();
     res.json(publicUser(req.user));
+  });
+
+  api.post('/me/password', limiter, async (req, res) => {
+    await auth.changePassword(req.user, req.body?.currentPassword, req.body?.newPassword);
+    res.status(204).end();
   });
 
   api.get('/me/likes', (req, res) => {
@@ -228,17 +246,19 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
     if (!files.length) throw httpError(400, 'No audio files received (mp3, m4a, aac, ogg, opus, webm, flac, wav)');
     const tracks = [];
     const errors = [];
+    const duplicates = [];
     for (const f of files) {
       try {
-        const t = await ingestAudio({ tmpPath: f.path, originalName: f.originalname, mime: f.mimetype, ownerId: req.user.id, dirs });
-        store.tracks.push(t);
+        const t = await ingestAudio({ tmpPath: f.path, originalName: f.originalname, mime: f.mimetype, ownerId: req.user.id, dirs, findByHash });
+        if (store.track(t.id)) duplicates.push({ file: f.originalname, trackId: t.id });
+        else store.tracks.push(t);
         tracks.push(publicTrack(t, req.user));
       } catch (err) {
         errors.push({ file: f.originalname, error: err.message });
       }
     }
     store.save();
-    res.status(tracks.length ? 201 : 415).json({ tracks, errors });
+    res.status(tracks.length ? 201 : 415).json({ tracks, errors, duplicates });
   });
 
   // Save an online search result as a playable (proxied) track.
@@ -305,6 +325,23 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
       if (v) res.set(h, v);
     }
     Readable.fromWeb(up.body).on('error', () => res.destroy()).pipe(res);
+  });
+
+  api.get('/tracks/:id/lyrics', (req, res) => {
+    const t = store.track(req.params.id);
+    if (!t) throw httpError(404, 'Track not found');
+    res.json({ lyrics: t.lyrics || null, synced: isSyncedLyrics(t.lyrics) });
+  });
+
+  api.put('/tracks/:id/lyrics', (req, res) => {
+    const t = store.track(req.params.id);
+    if (!t) throw httpError(404, 'Track not found');
+    if (t.ownerId !== req.user.id) throw httpError(403, 'Only the uploader can edit lyrics');
+    const raw = req.body?.lyrics;
+    if (raw !== null && typeof raw !== 'string') throw httpError(400, 'lyrics must be a string or null');
+    t.lyrics = cleanLyrics(raw);
+    store.save();
+    res.json({ lyrics: t.lyrics, synced: isSyncedLyrics(t.lyrics) });
   });
 
   api.delete('/tracks/:id', async (req, res) => {
@@ -382,6 +419,25 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
     const tracks = localTracks().filter((t) => t.artist === req.params.name).sort((a, b) => a.album.localeCompare(b.album) || (a.trackNo || 0) - (b.trackNo || 0));
     if (!tracks.length) throw httpError(404, 'Artist not found');
     res.json({ name: req.params.name, cover: tracks.find((t) => t.cover)?.cover || null, tracks: tracks.map((t) => publicTrack(t, req.user)) });
+  });
+
+  // ---------- users: everyone's own uploads ----------
+  api.get('/users', (_req, res) => {
+    const counts = new Map();
+    for (const t of localTracks()) counts.set(t.ownerId, (counts.get(t.ownerId) || 0) + 1);
+    const list = [...counts].map(([id, uploadCount]) => ({ ...publicUser(store.user(id) || { id, username: 'unknown' }), uploadCount }));
+    res.json(list.sort((a, b) => b.uploadCount - a.uploadCount || a.username.localeCompare(b.username)));
+  });
+
+  api.get('/users/:username', (req, res) => {
+    const lower = req.params.username.toLowerCase();
+    const u = store.users.find((x) => x.username.toLowerCase() === lower);
+    if (!u) throw httpError(404, 'User not found');
+    res.json({
+      user: publicUser(u),
+      uploads: localTracks().filter((t) => t.ownerId === u.id).sort(byNewest).map((t) => publicTrack(t, req.user)),
+      playlists: store.playlists.filter((p) => p.ownerId === u.id).sort((a, b) => b.updatedAt - a.updatedAt).map((p) => publicPlaylist(p, req.user)),
+    });
   });
 
   // ---------- playlists ----------
@@ -514,6 +570,8 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
   api.post('/downloads', async (req, res) => {
     res.status(202).json(await downloader.enqueue(req.user.id, req.body?.url));
   });
+  api.post('/downloads/:id/cancel', (req, res) => res.json(downloader.cancel(req.user.id, req.params.id)));
+  api.post('/downloads/:id/retry', (req, res) => res.json(downloader.retry(req.user.id, req.params.id)));
 
   // ---------- rooms (REST view; live control is over Socket.IO) ----------
   api.get('/rooms/:code', (req, res) => {

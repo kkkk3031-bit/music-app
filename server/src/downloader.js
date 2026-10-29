@@ -27,7 +27,8 @@ function fail(message, status = 400) {
 }
 
 export class Downloader {
-  constructor({ store, dirs, onUpdate = () => {}, ytdlpPath = process.env.YTDLP_PATH || null }) {
+  constructor({ store, dirs, onUpdate = () => {}, ytdlpPath = process.env.YTDLP_PATH || null, findByHash = () => null }) {
+    this.findByHash = findByHash;
     this.store = store;
     this.dirs = dirs;
     this.onUpdate = onUpdate;
@@ -70,6 +71,36 @@ export class Downloader {
     jobs.forEach((j) => this.emit(j));
     this.pump();
     return jobs.map(publicJob);
+  }
+
+  find(userId, jobId) {
+    const job = this.jobs.find((j) => j.id === jobId && j.userId === userId);
+    if (!job) throw fail('Download not found', 404);
+    return job;
+  }
+
+  /** Queued jobs stop immediately; running ones are aborted mid-transfer. */
+  cancel(userId, jobId) {
+    const job = this.find(userId, jobId);
+    if (job.status === 'queued') {
+      job.status = 'canceled';
+      this.emit(job);
+    } else if (job.status === 'downloading') {
+      job.canceled = true;
+      job.abort?.abort();
+    } else {
+      throw fail(`Cannot cancel a download that is ${job.status}`, 409);
+    }
+    return publicJob(job);
+  }
+
+  retry(userId, jobId) {
+    const job = this.find(userId, jobId);
+    if (job.status !== 'error' && job.status !== 'canceled') throw fail('Only failed or canceled downloads can be retried', 409);
+    Object.assign(job, { status: 'queued', progress: 0, bytes: 0, total: 0, error: null, canceled: false });
+    this.emit(job);
+    this.pump();
+    return publicJob(job);
   }
 
   async resolve(u) {
@@ -126,12 +157,14 @@ export class Downloader {
 
   async run(job) {
     const tmpBase = path.join(this.dirs.tmp, `dl-${job.id}`);
+    job.abort = new AbortController();
     try {
       job.status = 'downloading';
       this.emit(job);
       const { tmpPath, name, mime, hints } =
         job.spec.kind === 'ytdlp' ? await this.runYtdlp(job, tmpBase) : await this.runHttp(job, tmpBase);
 
+      if (job.canceled) throw fail('Canceled');
       job.status = 'processing';
       this.emit(job);
       const track = await ingestAudio({
@@ -142,26 +175,28 @@ export class Downloader {
         dirs: this.dirs,
         source: job.spec.source === 'link' ? 'download' : job.spec.source,
         hints,
+        findByHash: this.findByHash,
       });
-      this.store.tracks.push(track);
+      if (!this.store.track(track.id)) this.store.tracks.push(track);
       this.store.save();
       job.trackId = track.id;
       job.title = track.title;
       job.progress = 1;
       job.status = 'done';
     } catch (err) {
-      job.status = 'error';
-      job.error = err.message || 'Download failed';
+      job.status = job.canceled ? 'canceled' : 'error';
+      job.error = job.canceled ? null : err.message || 'Download failed';
       for (const f of await fsp.readdir(this.dirs.tmp).catch(() => [])) {
         if (f.startsWith(`dl-${job.id}`)) await fsp.rm(path.join(this.dirs.tmp, f), { force: true });
       }
     }
+    job.abort = null;
     this.emit(job);
   }
 
   async runHttp(job, tmpBase) {
     const { url, allowlist, hints } = job.spec;
-    const res = await safeFetch(url, { allowlist, signal: AbortSignal.timeout(10 * 60 * 1000) });
+    const res = await safeFetch(url, { allowlist, signal: AbortSignal.any([job.abort.signal, AbortSignal.timeout(10 * 60 * 1000)]) });
     if (!res.ok || !res.body) throw fail(`Server returned ${res.status}`, 502);
     const mime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     const finalName = decodeURIComponent(new URL(res.url || url).pathname.split('/').pop() || '');
@@ -204,6 +239,7 @@ export class Downloader {
       let err = '';
       let lastEmit = 0;
       const killer = setTimeout(() => proc.kill('SIGKILL'), 15 * 60 * 1000);
+      job.abort.signal.addEventListener('abort', () => proc.kill('SIGKILL'), { once: true });
       proc.stdout.on('data', (d) => {
         out += d;
         const m = String(d).match(/\[download\]\s+([\d.]+)%/);
@@ -242,7 +278,7 @@ export class Downloader {
     this.jobs = this.jobs.filter((j) => {
       const n = (byUser.get(j.userId) || 0) + 1;
       byUser.set(j.userId, n);
-      return n <= KEEP_JOBS || j.status === 'queued' || j.status === 'downloading';
+      return n <= KEEP_JOBS || ['queued', 'downloading', 'processing'].includes(j.status);
     });
   }
 }
@@ -257,6 +293,6 @@ function ytdlpError(url, stderr) {
 }
 
 function publicJob(j) {
-  const { spec, ...rest } = j;
+  const { spec, abort, canceled, ...rest } = j;
   return rest;
 }

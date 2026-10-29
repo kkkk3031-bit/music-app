@@ -123,6 +123,10 @@ object Api {
     /** Saves an online result as a proxied track (idempotent server-side). */
     suspend fun ensureTrack(t: Track): Track = if (t.remote == null) t else Track.from(obj("POST", "/tracks/remote", t.remote))
 
+    suspend fun uploaders() = arr("/users").mapObjects(Uploader::from)
+    suspend fun userUploads(username: String) =
+        obj("GET", "/users/" + URLEncoder.encode(username, "UTF-8")).getJSONArray("uploads").mapObjects(Track::from)
+
     suspend fun downloads() = arr("/downloads").mapObjects(DownloadJob::from)
     suspend fun download(url: String) { request("POST", "/downloads", JSONObject().put("url", url)) }
 
@@ -173,9 +177,11 @@ object Api {
             val r = runCatching { JSONObject(text) }.getOrNull()
             val ok = r?.optJSONArray("tracks")?.length() ?: 0
             val errors = r?.optJSONArray("errors")?.mapObjects { "${it.optString("file")}: ${it.optString("error")}" } ?: emptyList()
+            val dups = r?.optJSONArray("duplicates")?.length() ?: 0
             if (ok == 0 && errors.isEmpty()) throw ApiException(code, r?.optString("error") ?: "Upload failed ($code)")
             buildString {
-                append("Added $ok song(s).")
+                if (ok - dups > 0) append("Added ${ok - dups} song(s).")
+                if (dups > 0) append(if (isEmpty()) "" else "\n").append("$dups already in the library.")
                 errors.forEach { append("\n").append(it) }
             }
         } finally {

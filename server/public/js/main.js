@@ -3,7 +3,7 @@ import { get, post, session, setUnauthorizedHandler } from './api.js';
 import { state, on, emit, refreshPlaylists } from './state.js';
 import { Player } from './player.js';
 import { RoomClient } from './rooms.js';
-import { likeButton, makeSortable, markPlaying, createPlaylist, trackMenu } from './components.js';
+import { likeButton, makeSortable, markPlaying, createPlaylist, trackMenu, parseLrc, editLyrics } from './components.js';
 import * as V from './views.js';
 
 const $ = (id) => document.getElementById(id);
@@ -61,7 +61,7 @@ function logout() {
 // ---------------------------------------------------------------- shell
 function renderNav() {
   const route = (location.hash.slice(2).split(/[/?]/)[0]) || 'home';
-  const active = (k) => k === route || (k === 'library' && ['playlist', 'album', 'artist', 'liked'].includes(route)) || (k === 'rooms' && route === 'room') || (k === 'upload' && route === 'import');
+  const active = (k) => k === route || (k === 'library' && ['playlist', 'album', 'artist', 'liked', 'user'].includes(route)) || (k === 'rooms' && route === 'room') || (k === 'upload' && route === 'import');
   const make = (cls) => NAV.map(([k, label, href]) => h('a', { href, class: active(k) ? 'active' : '', 'aria-current': active(k) ? 'page' : null }, icon(k), h('span', {}, cls === 'bottom' && k === 'library' ? 'Library' : label)));
   clear($('nav')).append(...make('side'));
   clear($('bottom-nav')).append(...make('bottom'));
@@ -201,6 +201,11 @@ function buildPlayerBar() {
     if (e.code === 'Space') { e.preventDefault(); p.toggle(); }
     else if (e.key === 'ArrowRight' && e.shiftKey) p.next();
     else if (e.key === 'ArrowLeft' && e.shiftKey) p.prev();
+    else if (e.key === 'ArrowRight' && !p.room) p.seek(p.audio.currentTime + 5);
+    else if (e.key === 'ArrowLeft' && !p.room) p.seek(Math.max(0, p.audio.currentTime - 5));
+    else if (e.key === 'ArrowUp' && e.altKey) { e.preventDefault(); p.setVolume(Math.min(1, p.audio.volume + 0.05)); }
+    else if (e.key === 'ArrowDown' && e.altKey) { e.preventDefault(); p.setVolume(Math.max(0, p.audio.volume - 0.05)); }
+    else if (e.key.toLowerCase() === 'm' && !e.ctrlKey && !e.metaKey) p.toggleMute();
   });
 }
 
@@ -271,6 +276,49 @@ function openNowPlaying() {
   const playBtn = h('button', { class: 'p-play', 'aria-label': 'Play/pause', onclick: () => p.toggle() });
   const shuffle = iconBtn('shuffle', 'Shuffle', () => p.toggleShuffle());
   const repeat = iconBtn('repeat', 'Repeat', () => p.cycleRepeat());
+  // Lyrics replace the cover while toggled on; synced (LRC) lines follow playback.
+  let showLyrics = false;
+  let lyrics = { trackId: null, text: null, lines: [] };
+  const lyricsBtn = iconBtn('lyrics', 'Lyrics', () => { showLyrics = !showLyrics; render(); });
+  const loadLyrics = async (t) => {
+    if (lyrics.trackId === t.id) return;
+    lyrics = { trackId: t.id, text: null, lines: [], loading: true };
+    try {
+      const r = await get(`/tracks/${t.id}/lyrics`);
+      if (lyrics.trackId !== t.id) return;
+      lyrics = { trackId: t.id, text: r.lyrics, lines: r.synced ? parseLrc(r.lyrics) : [] };
+    } catch {
+      lyrics = { trackId: t.id, text: null, lines: [] };
+    }
+    if (showLyrics) render();
+  };
+  const lyricsPanel = (t) => {
+    const mine = t.owner?.id === state.user?.id && t.type === 'local';
+    const edit = mine ? h('button', { class: 'btn ghost sm', onclick: () => editLyrics(t, lyrics.text, (r) => {
+      lyrics = { trackId: t.id, text: r.lyrics, lines: r.synced ? parseLrc(r.lyrics) : [] };
+      render();
+    }) }, icon('edit'), lyrics.text ? 'Edit' : 'Add lyrics') : null;
+    let body;
+    if (lyrics.loading) body = h('div', { class: 'muted' }, 'Loading…');
+    else if (!lyrics.text) body = h('div', { class: 'muted' }, 'No lyrics for this song yet.');
+    else if (lyrics.lines.length) body = h('div', { class: 'lrc' }, ...lyrics.lines.map((l) => h('p', { onclick: () => p.seek(l.time) }, l.text || '♪')));
+    else body = h('div', { class: 'plain' }, lyrics.text);
+    return h('div', { class: 'np-lyrics' }, body, edit);
+  };
+  let activeLine = -1;
+  const syncLyrics = () => {
+    if (!showLyrics || !lyrics.lines.length) return;
+    const now = p.audio.currentTime + 0.25;
+    let i = lyrics.lines.findIndex((l) => l.time > now) - 1;
+    if (i === -2) i = lyrics.lines.length - 1;
+    if (i === activeLine) return;
+    activeLine = i;
+    const rows = coverWrap.querySelectorAll('.lrc p');
+    rows.forEach((r, j) => r.classList.toggle('on', j === i));
+    // Scroll only the lyrics box; scrollIntoView would also shift the overlay.
+    const row = rows[i];
+    if (row) row.parentElement.scrollTo({ top: row.offsetTop - row.parentElement.clientHeight / 2 + row.offsetHeight / 2, behavior: 'smooth' });
+  };
 
   const close = () => {
     el.hidden = true;
@@ -287,13 +335,19 @@ function openNowPlaying() {
       iconBtn('more', 'More', (e) => p.current && trackMenu(e.currentTarget, p.current))),
     coverWrap, info,
     h('div', { class: 'np-seek' }, seek, h('div', { class: 'times' }, cur, dur)),
-    h('div', { class: 'np-controls' }, shuffle, iconBtn('prev', 'Previous', () => p.prev()), playBtn, iconBtn('next', 'Next', () => p.next()), repeat));
+    h('div', { class: 'np-controls' }, shuffle, iconBtn('prev', 'Previous', () => p.prev()), playBtn, iconBtn('next', 'Next', () => p.next()), repeat, lyricsBtn));
 
   function render() {
     const t = p.current;
     if (!t) return close();
     bg.style.backgroundImage = t.cover ? `url(${JSON.stringify(t.cover)})` : "none";
-    clear(coverWrap).append(coverEl(t.cover, 'np-cover'));
+    lyricsBtn.classList.toggle('on', showLyrics);
+    activeLine = -1;
+    if (showLyrics) {
+      loadLyrics(t);
+      clear(coverWrap).append(lyricsPanel(t));
+      syncLyrics();
+    } else clear(coverWrap).append(coverEl(t.cover, 'np-cover'));
     clear(info).append(h('div', { class: 't-text' }, h('div', { class: 't-title' }, t.title), h('div', { class: 't-artist' }, t.artist)), likeButton(t));
     shuffle.disabled = repeat.disabled = Boolean(p.room);
     shuffle.classList.toggle('on', p.shuffle);
@@ -308,6 +362,7 @@ function openNowPlaying() {
     if (!seeking) { seek.value = p.audio.currentTime; cur.textContent = fmtTime(p.audio.currentTime); }
     dur.textContent = fmtTime(d);
     setRangeFill(seek);
+    syncLyrics();
   }
   p.addEventListener('change', render);
   p.addEventListener('state', renderState);
@@ -320,7 +375,8 @@ function openNowPlaying() {
 const ROUTES = [
   [/^\/?$|^\/home$/, V.homeView],
   [/^\/search$/, V.searchView],
-  [/^\/library(?:\/(?<tab>playlists|songs|albums|artists))?$/, V.libraryView],
+  [/^\/library(?:\/(?<tab>playlists|uploads|songs|albums|artists))?$/, V.libraryView],
+  [/^\/user\/(?<name>[\w.-]+)$/, V.userView],
   [/^\/playlist\/(?<id>[\w-]+)$/, V.playlistView],
   [/^\/album\/(?<key>[\w-]+)$/, V.albumView],
   [/^\/artist\/(?<name>.+)$/, V.artistView],
@@ -341,7 +397,10 @@ async function route() {
   if (typeof cleanup === 'function') cleanup();
   cleanup = null;
   document.querySelectorAll('.menu').forEach((m) => m.remove());
-  const view = clear($('view'));
+  // Fresh container per navigation: a slow view that resolves after the user
+  // has moved on renders into a detached node instead of over the new page.
+  const view = h('div', { class: 'view-page' });
+  $('view').replaceChildren(view);
   $('main').scrollTop = 0;
   renderNav();
   if (!match) {
@@ -356,7 +415,7 @@ async function route() {
   } catch (err) {
     if (mySeq !== navSeq) return;
     clear(view).append(h('div', { class: 'empty' }, err.message || 'Something went wrong'));
-    if (err.status !== 404) console.error(err);
+    if (err.status !== 404 && err.status !== 401) console.error(err);
   }
 }
 

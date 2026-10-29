@@ -14,7 +14,7 @@ if (fs.existsSync(envFile)) {
   }
 }
 
-const port = Number(process.env.PORT) || 3020;
+const port = Number(process.env.PORT) || 3030;
 const dataDir = path.resolve(here, process.env.DATA_DIR || 'data');
 const { server, close } = createApp({ dataDir });
 

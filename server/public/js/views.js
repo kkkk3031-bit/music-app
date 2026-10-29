@@ -140,7 +140,7 @@ function renderResults(root, r) {
 // ---------------------------------------------------------------- library
 export async function libraryView(root, params) {
   const tab = params.tab || 'playlists';
-  const tabs = [['playlists', 'Playlists'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists']];
+  const tabs = [['playlists', 'Playlists'], ['uploads', 'Uploads'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists']];
   put(root, 
     h('div', { class: 'row' }, h('h1', { style: { flex: 1 } }, 'Your Library'),
       h('a', { class: 'btn sm', href: '#/import' }, icon('upload'), 'Import')),
@@ -161,6 +161,21 @@ export async function libraryView(root, params) {
         }),
         mine.map(playlistCard)),
       others.length ? [h('h2', {}, 'From other listeners'), h('div', { class: 'grid' }, others.map(playlistCard))] : null);
+  } else if (tab === 'uploads') {
+    const [mine, users] = await Promise.all([get(`/users/${encodeURIComponent(state.user.username)}`), get('/users')]);
+    const others = users.filter((u) => u.id !== state.user.id);
+    const reload = () => libraryView(clear(root), params);
+    put(clear(body),
+      h('h2', {}, `Your uploads · ${mine.uploads.length}`),
+      mine.uploads.length
+        ? [h('div', { class: 'action-bar' },
+            h('button', { class: 'play-fab', 'aria-label': 'Play your uploads', onclick: () => playItems(mine.uploads, 0) }, icon('play')),
+            iconBtn('shuffle', 'Shuffle play', () => shufflePlay(mine.uploads)),
+            h('div', { class: 'spacer' }),
+            h('a', { class: 'btn sm', href: '#/import' }, icon('upload'), 'Upload more')),
+          trackList(mine.uploads, { onDeleted: reload })]
+        : emptyState('upload', 'You haven\'t uploaded any music yet.', h('a', { class: 'btn primary', href: '#/import' }, 'Upload your music')),
+      others.length ? [h('h2', {}, 'Uploads by other listeners'), h('div', { class: 'grid' }, others.map(uploaderCard))] : null);
   } else if (tab === 'songs') {
     const sortSel = h('select', { class: 'input', style: { width: 'auto', height: '36px' }, 'aria-label': 'Sort' },
       h('option', { value: 'recent' }, 'Recently added'), h('option', { value: 'title' }, 'Title'), h('option', { value: 'artist' }, 'Artist'));
@@ -226,6 +241,7 @@ export async function playlistView(root, params) {
     put(root, h('div', { class: 'action-bar' },
       h('button', { class: 'play-fab', 'aria-label': 'Play', disabled: !p.tracks.length, onclick: () => playItems(p.tracks, 0, { playlistId: p.id }) }, icon('play')),
       iconBtn('shuffle', 'Shuffle play', () => shufflePlay(p.tracks, { playlistId: p.id })),
+      iconBtn('link', 'Copy link', () => copyLink(`${location.origin}/#/playlist/${p.id}`)),
       mine ? iconBtn('more', 'More options', (e) => menu(e.currentTarget, [
         { label: 'Edit details', icon: 'edit', onClick: () => editDetails(p, render) },
         { label: 'Change cover', icon: 'upload', onClick: () => coverNode.click() },
@@ -258,6 +274,15 @@ export async function playlistView(root, params) {
   return on('playlist-changed', (e) => e.detail === params.id && render());
 }
 
+async function copyLink(url) {
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Link copied. Anyone signed in can listen; only you can edit.');
+  } catch {
+    window.prompt('Copy this link:', url);
+  }
+}
+
 function editDetails(p, after) {
   const name = h('input', { class: 'input', value: p.name, maxlength: 100, 'aria-label': 'Name' });
   const desc = h('textarea', { class: 'input', rows: 3, maxlength: 300, placeholder: 'Add an optional description', style: { height: 'auto', padding: '10px 16px', resize: 'vertical' } }, p.description || '');
@@ -279,6 +304,36 @@ function pickImage(cb) {
   const input = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
   input.onchange = () => input.files[0] && cb(input.files[0]);
   input.click();
+}
+
+// ---------------------------------------------------------------- uploaders
+function uploaderCard(u) {
+  return card({
+    title: u.username, sub: `${u.uploadCount} upload${u.uploadCount === 1 ? '' : 's'}`,
+    coverNode: avatarEl(u, 'card-avatar'),
+    onOpen: () => go(`#/user/${encodeURIComponent(u.username)}`),
+  });
+}
+
+export async function userView(root, params) {
+  put(root, loading());
+  const d = await get(`/users/${encodeURIComponent(params.name)}`);
+  const me = d.user.id === state.user.id;
+  clear(root);
+  put(root, h('div', { class: 'hero', style: { '--hero': '#2a3a4a' } }, avatarEl(d.user, 'hero-avatar'),
+    h('div', { style: { minWidth: 0 } },
+      h('div', { class: 'kind' }, me ? 'Your uploads' : 'Uploads'),
+      h('h1', {}, d.user.username),
+      h('div', { class: 'meta' }, `${d.uploads.length} songs uploaded · ${d.playlists.length} playlists`))));
+  put(root, h('div', { class: 'action-bar' },
+    h('button', { class: 'play-fab', 'aria-label': 'Play', disabled: !d.uploads.length, onclick: () => playItems(d.uploads, 0) }, icon('play')),
+    iconBtn('shuffle', 'Shuffle play', () => shufflePlay(d.uploads)),
+    me ? h('a', { class: 'btn sm', href: '#/import' }, icon('upload'), 'Upload more') : null));
+  put(root, d.uploads.length
+    ? trackList(d.uploads, { onDeleted: () => userView(clear(root), params) })
+    : emptyState('music', me ? 'You haven\'t uploaded any music yet.' : `${d.user.username} hasn't uploaded any music yet.`,
+      me ? h('a', { class: 'btn primary', href: '#/import' }, 'Upload your music') : null));
+  if (d.playlists.length) put(root, h('h2', {}, 'Playlists'), h('div', { class: 'grid' }, d.playlists.map(playlistCard)));
 }
 
 // ---------------------------------------------------------------- album / artist / liked
@@ -342,7 +397,10 @@ export async function importView(root) {
       const r = await uploadFiles(files, (p) => { bar.style.width = `${Math.round(p * 100)}%`; label.textContent = p < 1 ? `Uploading… ${Math.round(p * 100)}%` : 'Reading tags…'; });
       clear(status);
       if (r.tracks?.length) {
-        put(status, h('p', { style: { color: 'var(--ok)' } }, `Added ${r.tracks.length} song(s).`), trackList(r.tracks));
+        const fresh = r.tracks.length - (r.duplicates?.length || 0);
+        put(status, fresh ? h('p', { style: { color: 'var(--ok)' } }, `Added ${fresh} song(s).`) : null,
+          r.duplicates?.length ? h('p', { class: 'muted' }, `${r.duplicates.length} already in the library: ${r.duplicates.map((d) => d.file).join(', ')}`) : null,
+          trackList(r.tracks));
         emit('library');
       }
       for (const e of r.errors || []) put(status, h('p', { style: { color: 'var(--danger)' } }, `${e.file}: ${e.error}`));
@@ -362,10 +420,15 @@ export async function importView(root) {
   const renderJob = (j) => {
     const pct = j.status === 'done' ? 100 : Math.round((j.progress || 0) * 100);
     const statusText = j.status === 'downloading' ? (j.total ? `${pct}%` : `${(j.bytes / 1048576).toFixed(1)} MB`) : j.status;
+    const act = (path, label, ic) => iconBtn(ic, label, async () => {
+      try { renderJob(await post(`/downloads/${j.id}/${path}`)); } catch (err) { toastError(err); }
+    }, 'small');
+    const action = ['queued', 'downloading'].includes(j.status) ? act('cancel', 'Cancel download', 'close')
+      : ['error', 'canceled'].includes(j.status) ? act('retry', 'Retry download', 'sync') : null;
     const el = h('div', { class: 'job', dataset: { id: j.id } },
       h('div', { class: 'title', title: j.url }, j.title || j.url),
-      h('div', { class: `status ${j.status}` }, statusText),
-      j.status !== 'error' ? h('div', { class: 'progress' }, h('div', { style: { width: `${j.status === 'processing' ? 100 : pct}%` } })) : null,
+      h('div', { class: 'job-right' }, h('div', { class: `status ${j.status}` }, statusText), action),
+      !['error', 'canceled'].includes(j.status) ? h('div', { class: 'progress' }, h('div', { style: { width: `${j.status === 'processing' ? 100 : pct}%` } })) : null,
       j.error ? h('div', { class: 'err' }, j.error) : null);
     const old = jobsEl.querySelector(`[data-id="${CSS.escape(j.id)}"]`);
     if (old) old.replaceWith(el);
@@ -540,7 +603,27 @@ export async function profileView(root) {
         h('div', {}, h('div', { class: 'muted', style: { fontSize: '12px', fontWeight: 700, textTransform: 'uppercase' } }, 'Profile'),
           h('h1', { style: { margin: '4px 0' } }, u.username),
           h('div', { class: 'muted' }, `Member since ${new Date(u.createdAt).toLocaleDateString()} · ${state.playlists.length} playlists`))),
+      h('a', { class: 'btn', href: `#/user/${encodeURIComponent(u.username)}`, style: { marginTop: '16px' } }, icon('upload'), 'Your uploads'),
+      passwordForm(),
       h('button', { class: 'btn ghost', onclick: () => emit('logout') }, icon('logout'), 'Log out'));
+  };
+  const passwordForm = () => {
+    const field = (label, auto) => h('input', { class: 'input', type: 'password', placeholder: label, 'aria-label': label, autocomplete: auto, required: true, minlength: 6, maxlength: 128 });
+    const cur = field('Current password', 'current-password');
+    const next = field('New password', 'new-password');
+    const again = field('Repeat new password', 'new-password');
+    const submit = async (e) => {
+      e.preventDefault();
+      if (next.value !== again.value) return toast('New passwords don\'t match', 'error');
+      try {
+        await post('/me/password', { currentPassword: cur.value, newPassword: next.value });
+        e.target.reset();
+        toast('Password changed');
+      } catch (err) { toastError(err); }
+    };
+    return h('form', { class: 'panel pw-form', onsubmit: submit },
+      h('h2', { style: { marginTop: 0 } }, 'Change password'), cur, next, again,
+      h('button', { class: 'btn primary', type: 'submit' }, 'Update password'));
   };
   render(me);
 }

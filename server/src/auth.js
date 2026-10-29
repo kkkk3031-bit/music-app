@@ -84,7 +84,19 @@ export function createAuth({ store, secret }) {
     return { token: sign(user), user: publicUser(user) };
   }
 
-  return { requireUser, verify, register, login };
+  async function changePassword(user, current, next) {
+    next = String(next || '');
+    if (!(await bcrypt.compare(String(current || ''), user.passHash))) {
+      throw Object.assign(new Error('Current password is wrong'), { status: 403 });
+    }
+    if (next.length < 6 || next.length > 128) {
+      throw Object.assign(new Error('Password must be 6-128 characters'), { status: 400 });
+    }
+    user.passHash = await bcrypt.hash(next, 10);
+    store.save();
+  }
+
+  return { requireUser, verify, register, login, changePassword };
 }
 
 // Fixed-window limiter keyed by IP, for the auth endpoints.
