@@ -298,6 +298,11 @@ try {
   await bob.goto(`${s.base}/#/user/alice`);
   await bob.locator('.ig-actions').getByRole('link', { name: 'Message' }).click();
   await bob.locator('.dm-head', { hasText: 'alice' }).waitFor();
+  await bob.locator('.dm-intro', { hasText: '3 songs' }).waitFor();
+  assert.equal(await bob.locator('.dm-song').count(), 3);
+  await bob.locator('.dm-song', { hasText: 'Midnight Drive' }).click();
+  await bob.locator('.dm-song.playing', { hasText: 'Midnight Drive' }).waitFor();
+  await bob.screenshot({ path: path.join(shots, 'mobile-dm-intro.png') });
   await bob.locator('.dm-input').fill('hey alice, love your songs');
   await bob.locator('.dm-input').press('Enter');
   await bob.locator('.bubble.mine', { hasText: 'love your songs' }).waitFor();

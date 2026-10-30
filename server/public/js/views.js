@@ -795,14 +795,40 @@ export async function messagesView(root) {
   return on('dm', () => render().catch(() => {}));
 }
 
+// Instagram-style profile card at the top of a chat, plus the person's music.
+function dmIntro(p, empty) {
+  const u = p.user;
+  const profile = `#/user/${encodeURIComponent(u.username)}`;
+  const songs = p.uploads.slice(0, 12);
+  return h('div', { class: 'dm-intro' },
+    h('a', { href: profile, class: 'ig-ring' }, avatarEl(u, 'ig-avatar')),
+    h('b', { class: 'dm-intro-name' }, u.username),
+    h('div', { class: 'dim small' }, `${plural(p.uploads.length, 'song')} · ${plural(p.followers, 'follower')}`),
+    u.bio ? h('p', { class: 'dm-intro-bio' }, u.bio) : null,
+    h('a', { class: 'btn sm', href: profile }, 'View profile'),
+    songs.length
+      ? h('div', { class: 'dm-music' },
+        h('div', { class: 'dm-music-head' }, h('span', {}, `${u.username}'s music`),
+          p.uploads.length > songs.length ? h('a', { class: 'show-all', href: profile }, 'Show all') : null),
+        h('div', { class: 'dm-music-row' }, songs.map((t, i) => h('button', {
+          class: 'dm-song', title: `${t.title} · ${t.artist}`, 'aria-label': `Play ${t.title}`, dataset: { id: t.id },
+          onclick: () => playItems(p.uploads, i),
+        }, coverEl(t.cover, '', 'music', t.title), h('span', { class: 'tt' }, t.title), h('span', { class: 'ta' }, t.artist)))))
+      : h('div', { class: 'dim small' }, `${u.username} hasn't shared any music yet.`),
+    empty ? h('div', { class: 'dm-hi dim' }, 'No messages yet. Say hi!') : null);
+}
+
 export async function chatView(root, params) {
   put(root, loading());
   const name = decodeURIComponent(params.name);
-  const d = await get(`/dms/${encodeURIComponent(name)}`);
+  const [d, prof] = await Promise.all([
+    get(`/dms/${encodeURIComponent(name)}`),
+    get(`/users/${encodeURIComponent(name)}`),
+  ]);
   const other = d.user;
   if (other.id === state.user.id) return go('#/messages');
   emit('dm:seen');
-  const log = h('div', { class: 'dm-log' });
+  const log = h('div', { class: 'dm-log' }, dmIntro(prof, !d.messages.length));
   const seen = new Set();
   let lastDay = '';
   const addMsg = (m) => {
@@ -840,20 +866,24 @@ export async function chatView(root, params) {
     h('div', { class: 'dm-head' },
       h('a', { class: 'icon-btn', href: '#/messages', 'aria-label': 'Back to messages' }, icon('back')),
       h('a', { class: 'dm-who', href: `#/user/${encodeURIComponent(other.username)}` }, avatarEl(other), h('b', {}, other.username))),
-    log.childElementCount ? log : put(log, h('div', { class: 'dm-empty' }, avatarEl(other, 'lg'), h('b', {}, other.username), h('span', { class: 'dim' }, 'Say hi 👋'))),
+    log,
     h('form', { class: 'dm-form', onsubmit: (e) => { e.preventDefault(); send(); } }, input, sendBtn)));
   scroll();
   input.focus();
 
-  return on('dm', (e) => {
+  const mark = () => log.querySelectorAll('.dm-song').forEach((el) => el.classList.toggle('playing', el.dataset.id === state.player?.current?.id));
+  mark();
+  state.player.addEventListener('change', mark);
+  const off = on('dm', (e) => {
     const m = e.detail;
     const mine = m.from === state.user.id && m.to === other.id;
     const theirs = m.from === other.id && m.to === state.user.id;
     if (!mine && !theirs) return;
-    log.querySelector('.dm-empty')?.remove();
+    log.querySelector('.dm-hi')?.remove();
     addMsg(m);
     scroll();
     // Mark as read while the chat is open.
     if (theirs) get(`/dms/${encodeURIComponent(other.username)}`).then(() => emit('dm:seen')).catch(() => {});
   });
+  return () => { off(); state.player.removeEventListener('change', mark); };
 }

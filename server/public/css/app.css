@@ -461,7 +461,23 @@ input[type="range"]:disabled { cursor: default; }
 .bubble { max-width: 72%; padding: 8px 14px; border-radius: 20px; white-space: pre-wrap; word-wrap: break-word; line-height: 1.35; }
 .bubble.mine { align-self: flex-end; background: var(--accent-grad); color: #fff; border-bottom-right-radius: 6px; }
 .bubble.theirs { align-self: flex-start; background: var(--bg-4); border-bottom-left-radius: 6px; }
-.dm-empty { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.dm-intro { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 12px 0 20px; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
+.dm-intro .ig-ring .ig-avatar { width: 88px; height: 88px; font-size: 34px; border-width: 3px; }
+.dm-intro-name { font-size: 18px; margin-top: 6px; }
+.dm-intro-bio { margin: 2px 0; max-width: 420px; white-space: pre-wrap; word-break: break-word; }
+.dm-intro .btn.sm { border-radius: 8px; margin: 6px 0 4px; }
+.dm-music { width: 100%; margin-top: 10px; text-align: left; }
+.dm-music-head { display: flex; align-items: baseline; justify-content: space-between; font-weight: 700; margin-bottom: 8px; }
+.dm-music-row { display: grid; grid-auto-flow: column; grid-auto-columns: 112px; gap: 10px; overflow-x: auto; scrollbar-width: none; padding-bottom: 4px; }
+.dm-music-row::-webkit-scrollbar { display: none; }
+.dm-song { display: flex; flex-direction: column; gap: 2px; text-align: left; min-width: 0; padding: 6px; border-radius: 8px; }
+.dm-song:hover { background: var(--bg-4); }
+.dm-song .cover { width: 100%; aspect-ratio: 1; border-radius: 6px; margin-bottom: 4px; }
+.dm-song .cover img { width: 100%; height: 100%; object-fit: cover; }
+.dm-song .tt { font-weight: 700; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-song .ta { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dm-song.playing .tt { color: var(--accent); }
+.dm-hi { margin-top: 12px; }
 .dm-form { display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
 .dm-input { flex: 1; resize: none; height: 42px; max-height: 120px; padding: 10px 16px; border-radius: 21px; }
 .dm-send { color: var(--accent); }
