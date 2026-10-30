@@ -1,10 +1,10 @@
 // Page views. Each is async (root, params) → optional cleanup function.
-import { h, icon, iconBtn, fmtTotal, coverEl, avatarEl, toast, toastError, clear, confirmDialog, debounce, menu, modal } from './dom.js';
+import { h, icon, iconBtn, fmtTotal, coverEl, avatarEl, toast, toastError, clear, confirmDialog, debounce, menu, modal, hueOf } from './dom.js';
 import { get, post, patch, del, uploadFiles, uploadImage, session } from './api.js';
 import { state, on, emit, refreshPlaylists } from './state.js';
 import {
   trackList, card, emptyState, playItems, remoteItem, createPlaylist,
-  savePlaylistOrder, markPlaying, albumKey,
+  savePlaylistOrder, markPlaying, albumKey, trackMenu,
 } from './components.js';
 
 const go = (hash) => (location.hash = hash);
@@ -29,39 +29,69 @@ function likedCover() {
 
 function rail(title, nodes, more) {
   if (!nodes.length) return null;
-  return [h('div', { class: 'row' }, h('h2', { style: { flex: 1 } }, title), more || null), h('div', { class: 'grid' }, nodes)];
+  return h('section', { class: 'shelf-sec' },
+    h('div', { class: 'shelf-head' }, h('h2', {}, title), more || null),
+    h('div', { class: 'shelf' }, nodes));
 }
 
+const showAll = (href) => h('a', { class: 'show-all', href }, 'Show all');
+
 // ---------------------------------------------------------------- home
-export async function homeView(root) {
+const HOME_FILTERS = [['all', 'All'], ['music', 'Music'], ['playlists', 'Playlists']];
+
+export async function homeView(root, params) {
   put(root, loading());
   const d = await get('/home');
+  const f = new URLSearchParams(params.query || '').get('f');
+  const filter = HOME_FILTERS.some(([k]) => k === f) ? f : 'all';
   clear(root);
+  // Spotify-style color wash behind the header, tinted per user.
+  const hue = hueOf(state.user.username);
+  const main = document.getElementById('main');
+  main.style.setProperty('--top-tint', `hsl(${hue} 42% 22%)`);
+
+  const trackCard = (list, sub) => (t, i) => card({
+    title: t.title, sub: sub(t), cover: t.cover,
+    onOpen: () => playItems(list, i), onPlay: () => playItems(list, i),
+  });
+  const quickTile = (cover, label, onclick, extra) => h('div', { class: 'quick', onclick }, cover, h('span', {}, label), extra || null);
   const quick = [
-    h('div', { class: 'quick', onclick: () => go('#/liked') }, likedCover(), h('span', {}, 'Liked Songs'), h('span', { class: 'dim', style: { flex: 'none' } }, String(d.likedCount))),
-    ...[...d.jumpBackIn, ...d.playlists.filter((p) => !d.jumpBackIn.some((j) => j.id === p.id))].slice(0, 7).map((p) =>
-      h('div', { class: 'quick', onclick: () => go(`#/playlist/${p.id}`) }, coverEl(p.cover), h('span', {}, p.name))),
-  ];
-  put(root, 
-    h('h1', {}, `${greeting()}, ${state.user.username}`),
-    h('div', { class: 'quick-grid' }, quick),
-    rail('Recently played', d.recentlyPlayed.map((t, i) => card({
-      title: t.title, sub: t.artist, cover: t.cover,
-      onOpen: () => playItems(d.recentlyPlayed, i), onPlay: () => playItems(d.recentlyPlayed, i),
-    }))),
-    rail('Jump back in', d.jumpBackIn.map((p) => playlistCard(p))),
-    rail('New uploads', d.newUploads.map((t, i) => card({
-      title: t.title, sub: `${t.artist} · by ${t.owner.username}`, cover: t.cover,
-      onOpen: () => playItems(d.newUploads, i), onPlay: () => playItems(d.newUploads, i),
-    })), h('a', { class: 'muted', href: '#/library/songs' }, 'Show all')),
-    rail('Your playlists', d.playlists.map((p) => playlistCard(p))),
+    quickTile(likedCover(), 'Liked Songs', () => go('#/liked'), h('span', { class: 'dim', style: { flex: 'none' } }, String(d.likedCount))),
+    ...[...d.jumpBackIn, ...d.playlists.filter((p) => !d.jumpBackIn.some((j) => j.id === p.id))].slice(0, 5)
+      .map((p) => quickTile(coverEl(p.cover, '', 'music', p.name), p.name, () => go(`#/playlist/${p.id}`))),
+    ...d.recentlyPlayed.slice(0, 7).map((t, i) => quickTile(coverEl(t.cover, '', 'music', t.title), t.title, () => playItems(d.recentlyPlayed, i))),
+  ].slice(0, 8);
+
+  const music = filter !== 'playlists';
+  const lists = filter !== 'music';
+  put(root,
+    h('div', { class: 'home-head' },
+      h('div', { class: 'chips', role: 'tablist' }, HOME_FILTERS.map(([k, label]) =>
+        h('button', { class: `chip${k === filter ? ' active' : ''}`, role: 'tab', 'aria-selected': String(k === filter), onclick: () => go(k === 'all' ? '#/home' : `#/home?f=${k}`) }, label))),
+      h('h1', {}, `${greeting()}, ${state.user.username}`),
+      filter === 'all' ? h('div', { class: 'quick-grid' }, quick) : null),
+    music && rail('Recently played', d.recentlyPlayed.map(trackCard(d.recentlyPlayed, (t) => t.artist))),
+    music && rail('From people you follow', d.fromFollowing.map(trackCard(d.fromFollowing, (t) => `${t.artist} · @${t.owner.username}`))),
+    lists && rail('Jump back in', d.jumpBackIn.map((p) => playlistCard(p))),
+    music && rail('Popular artists', (d.artists || []).map((a) => card({
+      title: a.name, sub: 'Artist', cover: a.cover, round: true, fallbackIcon: 'user',
+      onOpen: () => go(`#/artist/${encodeURIComponent(a.name)}`),
+    })), showAll('#/library/artists')),
+    music && rail('New uploads', d.newUploads.map(trackCard(d.newUploads, (t) => `${t.artist} · @${t.owner.username}`)), showAll('#/library/songs')),
+    lists && rail('Your playlists', d.playlists.map((p) => playlistCard(p)), showAll('#/library/playlists')),
   );
-  if (!d.newUploads.length && !d.recentlyPlayed.length) {
+  if (lists && !music && !d.playlists.length && !d.jumpBackIn.length) {
+    put(root, emptyState('library', 'No playlists yet.', h('button', { class: 'btn primary', onclick: async () => {
+      try { go(`#/playlist/${(await createPlaylist()).id}`); } catch (err) { toastError(err); }
+    } }, icon('plus'), 'Create playlist')));
+  }
+  if (music && !d.newUploads.length && !d.recentlyPlayed.length) {
     put(root, emptyState('music', 'Your library is empty. Upload songs or search for free music to get started.',
       h('div', { class: 'row', style: { justifyContent: 'center' } },
         h('a', { class: 'btn primary', href: '#/import' }, icon('upload'), 'Upload music'),
         h('a', { class: 'btn', href: '#/search' }, icon('search'), 'Search'))));
   }
+  return () => main.style.removeProperty('--top-tint');
 }
 
 function playlistCard(p) {
@@ -315,25 +345,132 @@ function uploaderCard(u) {
   });
 }
 
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+// Instagram-style profile: avatar + counts, bio, follow/message, tabbed square grid.
 export async function userView(root, params) {
   put(root, loading());
   const d = await get(`/users/${encodeURIComponent(params.name)}`);
-  const me = d.user.id === state.user.id;
+  const u = d.user;
+  const me = u.id === state.user.id;
+  const tab = new URLSearchParams(params.query || '').get('tab') === 'playlists' ? 'playlists' : 'songs';
+  const href = (t) => `#/user/${encodeURIComponent(u.username)}${t === 'songs' ? '' : `?tab=${t}`}`;
   clear(root);
-  put(root, h('div', { class: 'hero', style: { '--hero': '#2a3a4a' } }, avatarEl(d.user, 'hero-avatar'),
-    h('div', { style: { minWidth: 0 } },
-      h('div', { class: 'kind' }, me ? 'Your uploads' : 'Uploads'),
-      h('h1', {}, d.user.username),
-      h('div', { class: 'meta' }, `${d.uploads.length} songs uploaded · ${d.playlists.length} playlists`))));
-  put(root, h('div', { class: 'action-bar' },
-    h('button', { class: 'play-fab', 'aria-label': 'Play', disabled: !d.uploads.length, onclick: () => playItems(d.uploads, 0) }, icon('play')),
-    iconBtn('shuffle', 'Shuffle play', () => shufflePlay(d.uploads)),
-    me ? h('a', { class: 'btn sm', href: '#/import' }, icon('upload'), 'Upload more') : null));
-  put(root, d.uploads.length
-    ? trackList(d.uploads, { onDeleted: () => userView(clear(root), params) })
-    : emptyState('music', me ? 'You haven\'t uploaded any music yet.' : `${d.user.username} hasn't uploaded any music yet.`,
-      me ? h('a', { class: 'btn primary', href: '#/import' }, 'Upload your music') : null));
-  if (d.playlists.length) put(root, h('h2', {}, 'Playlists'), h('div', { class: 'grid' }, d.playlists.map(playlistCard)));
+
+  const followersN = h('b', {}, String(d.followers));
+  const stat = (n, label, onclick) => h('button', { class: 'ig-stat', onclick, disabled: !onclick }, typeof n === 'object' ? n : h('b', {}, String(n)), h('span', {}, label));
+
+  const followBtn = h('button', { class: 'btn sm' });
+  const paintFollow = (on) => {
+    followBtn.className = `btn sm ${on ? '' : 'primary'}`;
+    followBtn.textContent = on ? 'Following' : d.followsYou ? 'Follow back' : 'Follow';
+    followBtn.setAttribute('aria-pressed', String(on));
+  };
+  paintFollow(d.isFollowing);
+  followBtn.onclick = async () => {
+    followBtn.disabled = true;
+    try {
+      const r = await (d.isFollowing ? del : post)(`/users/${encodeURIComponent(u.username)}/follow`);
+      d.isFollowing = r.isFollowing;
+      followersN.textContent = String(r.followers);
+      paintFollow(r.isFollowing);
+    } catch (err) { toastError(err); }
+    followBtn.disabled = false;
+  };
+
+  const actions = me
+    ? [h('button', { class: 'btn sm', onclick: () => editProfile(u, () => userView(clear(root), params)) }, 'Edit profile'),
+      h('a', { class: 'btn sm', href: '#/import' }, icon('upload'), 'Upload')]
+    : [followBtn, h('a', { class: 'btn sm', href: `#/messages/${encodeURIComponent(u.username)}` }, 'Message')];
+  if (d.uploads.length) {
+    actions.push(h('button', { class: 'btn sm icon-only', 'aria-label': 'Shuffle play', title: 'Shuffle play', onclick: () => shufflePlay(d.uploads) }, icon('shuffle')));
+  }
+
+  put(root,
+    h('header', { class: 'ig-head' },
+      h('div', { class: 'ig-ring' }, avatarEl(u, 'ig-avatar')),
+      h('div', { class: 'ig-name' }, h('h1', {}, u.username), h('div', { class: 'ig-actions' }, actions)),
+      h('div', { class: 'ig-stats' },
+        stat(d.uploads.length, d.uploads.length === 1 ? 'song' : 'songs', null),
+        stat(followersN, 'followers', () => peopleList(`${u.username}'s followers`, `/users/${encodeURIComponent(u.username)}/followers`)),
+        stat(d.following, 'following', () => peopleList(`${u.username} follows`, `/users/${encodeURIComponent(u.username)}/following`))),
+      h('div', { class: 'ig-bio' },
+        d.followsYou && !me ? h('span', { class: 'pill' }, 'Follows you') : null,
+        u.bio ? h('p', {}, u.bio) : me ? h('p', { class: 'dim' }, 'Add a bio so people know what you play.') : null,
+        h('div', { class: 'dim small' }, `Joined ${new Date(u.createdAt).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}`))),
+    h('nav', { class: 'ig-tabs' },
+      h('a', { href: href('songs'), class: tab === 'songs' ? 'active' : '' }, icon('grid'), h('span', {}, 'Songs')),
+      h('a', { href: href('playlists'), class: tab === 'playlists' ? 'active' : '' }, icon('library'), h('span', {}, 'Playlists'))));
+
+  if (tab === 'songs') {
+    if (!d.uploads.length) {
+      put(root, emptyState('music', me ? 'Share your first song.' : 'No songs yet.',
+        me ? h('a', { class: 'btn primary', href: '#/import' }, 'Upload your music') : null));
+      return;
+    }
+    const grid = h('div', { class: 'ig-grid' }, d.uploads.map((t, i) => {
+      const tile = h('div', { class: 'ig-tile', dataset: { id: t.id }, tabindex: 0, role: 'button', 'aria-label': `Play ${t.title}`,
+        onclick: () => playItems(d.uploads, i),
+        onkeydown: (e) => e.key === 'Enter' && playItems(d.uploads, i) },
+      coverEl(t.cover, '', 'music', t.title),
+      h('div', { class: 'ig-over' }, icon('play')),
+      h('div', { class: 'ig-cap' }, h('b', {}, t.title), h('span', {}, t.artist)),
+      h('button', { class: 'ig-more', 'aria-label': `More options for ${t.title}`, onclick: (e) => {
+        e.stopPropagation();
+        trackMenu(e.currentTarget, t, { onDeleted: () => userView(clear(root), params) });
+      } }, icon('more')));
+      return tile;
+    }));
+    const mark = () => grid.querySelectorAll('.ig-tile').forEach((el) => el.classList.toggle('playing', el.dataset.id === state.player?.current?.id));
+    mark();
+    put(root, grid);
+    state.player.addEventListener('change', mark);
+    return () => state.player.removeEventListener('change', mark);
+  }
+  put(root, d.playlists.length
+    ? h('div', { class: 'grid' }, d.playlists.map(playlistCard))
+    : emptyState('library', me ? 'You haven\'t made any playlists yet.' : 'No playlists yet.'));
+}
+
+function peopleList(title, url) {
+  const body = h('div', { class: 'people' }, loading());
+  const m = modal(title, body, [{ label: 'Close', cls: 'ghost', onClick: (close) => close() }]);
+  get(url).then((people) => {
+    put(clear(body), people.length
+      ? people.map((p) => h('a', { class: 'person', href: `#/user/${encodeURIComponent(p.username)}`, onclick: () => m.close() },
+        avatarEl(p), h('div', { class: 'meta' }, h('b', {}, p.username), p.bio ? h('span', { class: 'dim' }, p.bio) : null)))
+      : h('div', { class: 'empty' }, 'Nobody here yet.'));
+  }).catch((err) => { m.close(); toastError(err); });
+}
+
+function editProfile(u, after) {
+  const bio = h('textarea', { class: 'input bio-input', maxlength: 150, rows: 3, placeholder: 'Bio' });
+  bio.value = u.bio || '';
+  const count = h('div', { class: 'dim small', style: { textAlign: 'right' } });
+  const upd = () => (count.textContent = `${bio.value.length}/150`);
+  bio.addEventListener('input', upd);
+  upd();
+  const photo = h('button', { class: 'btn sm', type: 'button', onclick: () => pickImage(async (file) => {
+    try {
+      const nu = await uploadImage('/me/avatar', file);
+      state.user = nu;
+      session.set(null, nu);
+      emit('user');
+      toast('Photo updated');
+    } catch (err) { toastError(err); }
+  }) }, 'Change photo');
+  modal('Edit profile', h('div', { class: 'edit-profile' }, photo, bio, count), [
+    { label: 'Cancel', cls: 'ghost', onClick: (close) => close() },
+    { label: 'Save', cls: 'primary', onClick: async (close) => {
+      try {
+        const nu = await patch('/me', { bio: bio.value });
+        state.user = nu;
+        session.set(null, nu);
+        close();
+        after();
+      } catch (err) { toastError(err); }
+    } },
+  ]);
 }
 
 // ---------------------------------------------------------------- album / artist / liked
@@ -628,3 +765,95 @@ export async function profileView(root) {
   render(me);
 }
 
+
+// ---------------------------------------------------------------- direct messages
+const timeAgo = (ts) => {
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return 'now';
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  if (s < 604800) return `${Math.floor(s / 86400)}d`;
+  return new Date(ts).toLocaleDateString();
+};
+
+export async function messagesView(root) {
+  put(root, loading());
+  const render = async () => {
+    const convos = await get('/dms');
+    put(clear(root), h('div', { class: 'dm-title' }, h('h1', {}, 'Messages')),
+      convos.length
+        ? h('div', { class: 'inbox' }, convos.map((c) => h('a', { class: `convo${c.unread ? ' unread' : ''}`, href: `#/messages/${encodeURIComponent(c.user.username)}` },
+          avatarEl(c.user, 'convo-av'),
+          h('div', { class: 'meta' },
+            h('b', {}, c.user.username),
+            h('span', { class: 'last' }, c.last.from === state.user.id ? `You: ${c.last.text}` : c.last.text, h('span', { class: 'dim' }, ` · ${timeAgo(c.last.createdAt)}`))),
+          c.unread ? h('span', { class: 'badge' }, String(c.unread)) : null)))
+        : emptyState('message', 'No messages yet. Open someone\'s profile and tap Message to start a chat.',
+          h('a', { class: 'btn', href: '#/library/uploads' }, 'Find people')));
+  };
+  await render();
+  return on('dm', () => render().catch(() => {}));
+}
+
+export async function chatView(root, params) {
+  put(root, loading());
+  const name = decodeURIComponent(params.name);
+  const d = await get(`/dms/${encodeURIComponent(name)}`);
+  const other = d.user;
+  if (other.id === state.user.id) return go('#/messages');
+  emit('dm:seen');
+  const log = h('div', { class: 'dm-log' });
+  const seen = new Set();
+  let lastDay = '';
+  const addMsg = (m) => {
+    if (seen.has(m.id)) return;
+    seen.add(m.id);
+    const day = new Date(m.createdAt).toDateString();
+    if (day !== lastDay) {
+      lastDay = day;
+      log.append(h('div', { class: 'dm-day' }, day === new Date().toDateString() ? 'Today' : new Date(m.createdAt).toLocaleDateString()));
+    }
+    log.append(h('div', { class: `bubble ${m.from === state.user.id ? 'mine' : 'theirs'}`, title: new Date(m.createdAt).toLocaleString() }, m.text));
+  };
+  const scroll = () => (log.scrollTop = log.scrollHeight);
+  d.messages.forEach(addMsg);
+
+  const input = h('textarea', { class: 'input dm-input', rows: 1, maxlength: 2000, placeholder: 'Message…', 'aria-label': 'Message' });
+  const sendBtn = h('button', { class: 'icon-btn dm-send', type: 'submit', 'aria-label': 'Send' }, icon('send'));
+  const send = async () => {
+    const text = input.value.trim();
+    if (!text) return;
+    sendBtn.disabled = true;
+    try {
+      addMsg(await post(`/dms/${encodeURIComponent(other.username)}`, { text }));
+      input.value = '';
+      scroll();
+    } catch (err) { toastError(err); }
+    sendBtn.disabled = false;
+    input.focus();
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+
+  put(clear(root), h('div', { class: 'dm' },
+    h('div', { class: 'dm-head' },
+      h('a', { class: 'icon-btn', href: '#/messages', 'aria-label': 'Back to messages' }, icon('back')),
+      h('a', { class: 'dm-who', href: `#/user/${encodeURIComponent(other.username)}` }, avatarEl(other), h('b', {}, other.username))),
+    log.childElementCount ? log : put(log, h('div', { class: 'dm-empty' }, avatarEl(other, 'lg'), h('b', {}, other.username), h('span', { class: 'dim' }, 'Say hi 👋'))),
+    h('form', { class: 'dm-form', onsubmit: (e) => { e.preventDefault(); send(); } }, input, sendBtn)));
+  scroll();
+  input.focus();
+
+  return on('dm', (e) => {
+    const m = e.detail;
+    const mine = m.from === state.user.id && m.to === other.id;
+    const theirs = m.from === other.id && m.to === state.user.id;
+    if (!mine && !theirs) return;
+    log.querySelector('.dm-empty')?.remove();
+    addMsg(m);
+    scroll();
+    // Mark as read while the chat is open.
+    if (theirs) get(`/dms/${encodeURIComponent(other.username)}`).then(() => emit('dm:seen')).catch(() => {});
+  });
+}

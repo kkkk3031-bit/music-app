@@ -294,9 +294,9 @@ export function makeSortable(container, itemSel, handleSel, onMove) {
   });
 }
 
-export function card({ title, sub, cover, round = false, onOpen, onPlay, coverNode }) {
+export function card({ title, sub, cover, round = false, onOpen, onPlay, coverNode, fallbackIcon = 'music' }) {
   return h('div', { class: 'card', onclick: onOpen, tabindex: 0, onkeydown: (e) => e.key === 'Enter' && onOpen?.() },
-    coverNode || coverEl(cover, round ? 'round' : ''),
+    coverNode || coverEl(cover, round ? 'round' : '', fallbackIcon, title),
     onPlay ? h('button', { class: 'play-fab card-play', 'aria-label': `Play ${title}`, onclick: (e) => { e.stopPropagation(); onPlay(); } }, icon('play')) : null,
     h('div', { class: 'title' }, title),
     h('div', { class: 'sub' }, sub));

@@ -281,9 +281,47 @@ try {
   await bob.goto(`${s.base}/#/library/uploads`);
   await bob.getByText('You haven\'t uploaded any music yet.').waitFor();
   await bob.locator('.card', { hasText: 'alice' }).filter({ hasText: '3 uploads' }).click();
-  await bob.locator('.hero h1', { hasText: 'alice' }).waitFor();
-  assert.equal(await bob.locator('.track').count(), 3);
+  await bob.locator('.ig-head h1', { hasText: 'alice' }).waitFor();
+  assert.equal(await bob.locator('.ig-tile').count(), 3);
+
+  step = 'follow from profile';
+  await bob.locator('.ig-actions').getByRole('button', { name: 'Follow', exact: true }).click();
+  await bob.locator('.ig-actions').getByRole('button', { name: 'Following' }).waitFor();
+  assert.equal(await bob.locator('.ig-stat', { hasText: 'followers' }).locator('b').innerText(), '1');
   await bob.screenshot({ path: path.join(shots, 'mobile-user-uploads.png') });
+  await bob.goto(`${s.base}/#/home`);
+  await bob.locator('.shelf-head h2', { hasText: 'From people you follow' }).waitFor();
+  await bob.screenshot({ path: path.join(shots, 'mobile-home-following.png') });
+
+  step = 'direct messages';
+  await alice.goto(`${s.base}/#/home`);
+  await bob.goto(`${s.base}/#/user/alice`);
+  await bob.locator('.ig-actions').getByRole('link', { name: 'Message' }).click();
+  await bob.locator('.dm-head', { hasText: 'alice' }).waitFor();
+  await bob.locator('.dm-input').fill('hey alice, love your songs');
+  await bob.locator('.dm-input').press('Enter');
+  await bob.locator('.bubble.mine', { hasText: 'love your songs' }).waitFor();
+  await alice.getByText('bob: hey alice, love your songs').waitFor();
+  assert.equal(await alice.locator('#dm-btn .badge').innerText(), '1');
+  await alice.locator('#dm-btn').click();
+  await alice.locator('.convo.unread', { hasText: 'bob' }).click();
+  await alice.locator('.bubble.theirs', { hasText: 'love your songs' }).waitFor();
+  await alice.locator('#dm-btn .badge').waitFor({ state: 'hidden' });
+  await alice.locator('.dm-input').fill('thanks bob!');
+  await alice.getByRole('button', { name: 'Send' }).click();
+  await bob.locator('.bubble.theirs', { hasText: 'thanks bob!' }).waitFor();
+  await alice.screenshot({ path: path.join(shots, 'desktop-dm.png') });
+  await bob.screenshot({ path: path.join(shots, 'mobile-dm.png') });
+
+  step = 'edit bio';
+  await alice.goto(`${s.base}/#/user/alice`);
+  await alice.getByRole('button', { name: 'Edit profile' }).click();
+  await alice.locator('.bio-input').fill('Testing tones since 2026');
+  await alice.locator('.modal').getByRole('button', { name: 'Save' }).click();
+  await alice.locator('.ig-bio', { hasText: 'Testing tones since 2026' }).waitFor();
+  assert.equal(await alice.locator('.ig-stat', { hasText: 'followers' }).locator('b').innerText(), '1');
+  await alice.screenshot({ path: path.join(shots, 'desktop-profile.png') });
+
   await alice.goto(`${s.base}/#/library/uploads`);
   await alice.getByText('Your uploads · 3').waitFor();
   assert.equal(await alice.locator('.track').count(), 3);

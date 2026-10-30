@@ -81,9 +81,37 @@ function renderUserChip() {
   const chip = clear($('user-chip'));
   chip.append(avatarEl(state.user), h('span', {}, state.user.username), icon('chevronDown'));
   chip.onclick = () => menu(chip, [
-    { label: 'Profile', icon: 'user', onClick: () => (location.hash = '#/profile') },
+    { label: 'Your profile', icon: 'user', onClick: () => (location.hash = `#/user/${encodeURIComponent(state.user.username)}`) },
+    { label: 'Messages', icon: 'message', onClick: () => (location.hash = '#/messages') },
+    { label: 'Account settings', icon: 'edit', onClick: () => (location.hash = '#/profile') },
     { label: 'Log out', icon: 'logout', onClick: logout },
   ]);
+}
+
+// Instagram-style DM button in the top bar with an unread badge.
+async function refreshUnread() {
+  const btn = $('dm-btn');
+  try {
+    const { count } = await get('/dms/unread');
+    const badge = btn.querySelector('.badge');
+    badge.textContent = count > 9 ? '9+' : String(count);
+    badge.hidden = !count;
+    btn.setAttribute('aria-label', count ? `Messages, ${count} unread` : 'Messages');
+  } catch { /* offline: keep the old count */ }
+}
+
+function setupMessages() {
+  const btn = $('dm-btn');
+  btn.append(icon('message'), h('span', { class: 'badge', hidden: true }));
+  on('dm', (e) => {
+    const m = e.detail;
+    const chatOpen = location.hash === `#/messages/${encodeURIComponent(m.fromUser?.username || '')}`;
+    if (m.from !== state.user.id && !chatOpen) toast(`${m.fromUser.username}: ${m.text.slice(0, 80)}`);
+    refreshUnread();
+  });
+  on('dm:seen', refreshUnread);
+  on('dm:read', refreshUnread);
+  refreshUnread();
 }
 
 function renderRoomBadge() {
@@ -385,6 +413,8 @@ const ROUTES = [
   [/^\/rooms$/, V.roomsView],
   [/^\/room\/(?<code>[A-Za-z0-9]{6})$/, V.roomView],
   [/^\/profile$/, V.profileView],
+  [/^\/messages$/, V.messagesView],
+  [/^\/messages\/(?<name>[\w.-]+)$/, V.chatView],
 ];
 
 let cleanup = null;
@@ -451,6 +481,7 @@ async function boot() {
     } catch (err) { toastError(err); }
   };
   renderUserChip();
+  setupMessages();
   buildPlayerBar();
   on('playlists', renderSidebarPlaylists);
   on('user', renderUserChip);

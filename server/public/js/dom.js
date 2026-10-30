@@ -47,6 +47,9 @@ const P = {
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/>',
   logout: '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l5-5-5-5M15 12H3"/>',
   send: '<path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/>',
+  message: '<path d="M21 12a8.5 8.5 0 0 1-12.4 7.6L3 21l1.4-5.1A8.5 8.5 0 1 1 21 12z"/>',
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  back: '<path d="M15 18l-6-6 6-6"/>',
   link: '<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
@@ -87,13 +90,28 @@ export function fmtTotal(sec) {
   return `${Math.floor(m / 60)} hr ${m % 60} min`;
 }
 
-export function coverEl(url, cls = '', fallbackIcon = 'music') {
+/** Stable hue (0-359) from a string, for generated artwork. */
+export function hueOf(seed) {
+  let x = 0;
+  for (const c of String(seed)) x = (x * 31 + c.codePointAt(0)) >>> 0;
+  return x % 360;
+}
+
+// With a seed, a missing cover becomes a colored gradient instead of a gray box.
+export function coverEl(url, cls = '', fallbackIcon = 'music', seed = null) {
   const el = h('div', { class: `cover ${cls}` });
+  const fallback = () => {
+    if (seed == null) return icon(fallbackIcon);
+    const hue = hueOf(seed);
+    el.classList.add('gen');
+    el.style.background = `linear-gradient(135deg, hsl(${hue} 65% 52%), hsl(${(hue + 50) % 360} 60% 24%))`;
+    return icon(fallbackIcon);
+  };
   if (url) {
     const img = h('img', { src: url, alt: '', loading: 'lazy' });
-    img.onerror = () => img.replaceWith(icon(fallbackIcon));
+    img.onerror = () => img.replaceWith(fallback());
     el.append(img);
-  } else el.append(icon(fallbackIcon));
+  } else el.append(fallback());
   return el;
 }
 

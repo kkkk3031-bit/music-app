@@ -22,7 +22,7 @@ export function loadSecret(dataDir) {
 }
 
 export function publicUser(u) {
-  return { id: u.id, username: u.username, avatar: u.avatar || null, createdAt: u.createdAt };
+  return { id: u.id, username: u.username, avatar: u.avatar || null, bio: u.bio || '', createdAt: u.createdAt };
 }
 
 export function createAuth({ store, secret }) {
@@ -69,6 +69,8 @@ export function createAuth({ store, secret }) {
       likes: [],
       recent: [],
       recentPlaylists: [],
+      following: [],
+      bio: '',
       createdAt: Date.now(),
     };
     store.users.push(user);
@@ -100,11 +102,11 @@ export function createAuth({ store, secret }) {
 }
 
 // Fixed-window limiter keyed by IP, for the auth endpoints.
-export function rateLimit({ windowMs, max }) {
+export function rateLimit({ windowMs, max, key: keyOf = (req) => req.ip }) {
   const hits = new Map();
   return (req, res, next) => {
     const now = Date.now();
-    const key = req.ip;
+    const key = keyOf(req);
     let entry = hits.get(key);
     if (!entry || now > entry.reset) {
       entry = { count: 0, reset: now + windowMs };
@@ -112,7 +114,7 @@ export function rateLimit({ windowMs, max }) {
     }
     if (++entry.count > max) {
       res.set('Retry-After', String(Math.ceil((entry.reset - now) / 1000)));
-      return res.status(429).json({ error: 'Too many attempts, try again later' });
+      return res.status(429).json({ error: 'Too many requests, try again later' });
     }
     if (hits.size > 10000) {
       for (const [k, v] of hits) if (now > v.reset) hits.delete(k);
