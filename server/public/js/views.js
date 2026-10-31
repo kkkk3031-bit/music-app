@@ -1,10 +1,10 @@
 // Page views. Each is async (root, params) → optional cleanup function.
-import { h, icon, iconBtn, fmtTotal, coverEl, avatarEl, toast, toastError, clear, confirmDialog, debounce, menu, modal } from './dom.js';
+import { h, icon, iconBtn, fmtTotal, coverEl, avatarEl, toast, toastError, clear, confirmDialog, debounce, menu, modal, hueOf } from './dom.js';
 import { get, post, patch, del, uploadFiles, uploadImage, session } from './api.js';
 import { state, on, emit, refreshPlaylists } from './state.js';
 import {
   trackList, card, emptyState, playItems, remoteItem, createPlaylist,
-  savePlaylistOrder, markPlaying, albumKey,
+  savePlaylistOrder, markPlaying, albumKey, trackMenu,
 } from './components.js';
 
 const go = (hash) => (location.hash = hash);
@@ -29,39 +29,69 @@ function likedCover() {
 
 function rail(title, nodes, more) {
   if (!nodes.length) return null;
-  return [h('div', { class: 'row' }, h('h2', { style: { flex: 1 } }, title), more || null), h('div', { class: 'grid' }, nodes)];
+  return h('section', { class: 'shelf-sec' },
+    h('div', { class: 'shelf-head' }, h('h2', {}, title), more || null),
+    h('div', { class: 'shelf' }, nodes));
 }
 
+const showAll = (href) => h('a', { class: 'show-all', href }, 'Show all');
+
 // ---------------------------------------------------------------- home
-export async function homeView(root) {
+const HOME_FILTERS = [['all', 'All'], ['music', 'Music'], ['playlists', 'Playlists']];
+
+export async function homeView(root, params) {
   put(root, loading());
   const d = await get('/home');
+  const f = new URLSearchParams(params.query || '').get('f');
+  const filter = HOME_FILTERS.some(([k]) => k === f) ? f : 'all';
   clear(root);
+  // Spotify-style color wash behind the header, tinted per user.
+  const hue = hueOf(state.user.username);
+  const main = document.getElementById('main');
+  main.style.setProperty('--top-tint', `hsl(${hue} 42% 22%)`);
+
+  const trackCard = (list, sub) => (t, i) => card({
+    title: t.title, sub: sub(t), cover: t.cover,
+    onOpen: () => playItems(list, i), onPlay: () => playItems(list, i),
+  });
+  const quickTile = (cover, label, onclick, extra) => h('div', { class: 'quick', onclick }, cover, h('span', {}, label), extra || null);
   const quick = [
-    h('div', { class: 'quick', onclick: () => go('#/liked') }, likedCover(), h('span', {}, 'Liked Songs'), h('span', { class: 'dim', style: { flex: 'none' } }, String(d.likedCount))),
-    ...[...d.jumpBackIn, ...d.playlists.filter((p) => !d.jumpBackIn.some((j) => j.id === p.id))].slice(0, 7).map((p) =>
-      h('div', { class: 'quick', onclick: () => go(`#/playlist/${p.id}`) }, coverEl(p.cover), h('span', {}, p.name))),
-  ];
-  put(root, 
-    h('h1', {}, `${greeting()}, ${state.user.username}`),
-    h('div', { class: 'quick-grid' }, quick),
-    rail('Recently played', d.recentlyPlayed.map((t, i) => card({
-      title: t.title, sub: t.artist, cover: t.cover,
-      onOpen: () => playItems(d.recentlyPlayed, i), onPlay: () => playItems(d.recentlyPlayed, i),
-    }))),
-    rail('Jump back in', d.jumpBackIn.map((p) => playlistCard(p))),
-    rail('New uploads', d.newUploads.map((t, i) => card({
-      title: t.title, sub: `${t.artist} · by ${t.owner.username}`, cover: t.cover,
-      onOpen: () => playItems(d.newUploads, i), onPlay: () => playItems(d.newUploads, i),
-    })), h('a', { class: 'muted', href: '#/library/songs' }, 'Show all')),
-    rail('Your playlists', d.playlists.map((p) => playlistCard(p))),
+    quickTile(likedCover(), 'Liked Songs', () => go('#/liked'), h('span', { class: 'dim', style: { flex: 'none' } }, String(d.likedCount))),
+    ...[...d.jumpBackIn, ...d.playlists.filter((p) => !d.jumpBackIn.some((j) => j.id === p.id))].slice(0, 5)
+      .map((p) => quickTile(coverEl(p.cover, '', 'music', p.name), p.name, () => go(`#/playlist/${p.id}`))),
+    ...d.recentlyPlayed.slice(0, 7).map((t, i) => quickTile(coverEl(t.cover, '', 'music', t.title), t.title, () => playItems(d.recentlyPlayed, i))),
+  ].slice(0, 8);
+
+  const music = filter !== 'playlists';
+  const lists = filter !== 'music';
+  put(root,
+    h('div', { class: 'home-head' },
+      h('div', { class: 'chips', role: 'tablist' }, HOME_FILTERS.map(([k, label]) =>
+        h('button', { class: `chip${k === filter ? ' active' : ''}`, role: 'tab', 'aria-selected': String(k === filter), onclick: () => go(k === 'all' ? '#/home' : `#/home?f=${k}`) }, label))),
+      h('h1', {}, `${greeting()}, ${state.user.username}`),
+      filter === 'all' ? h('div', { class: 'quick-grid' }, quick) : null),
+    music && rail('Recently played', d.recentlyPlayed.map(trackCard(d.recentlyPlayed, (t) => t.artist))),
+    music && rail('From people you follow', d.fromFollowing.map(trackCard(d.fromFollowing, (t) => `${t.artist} · @${t.owner.username}`))),
+    lists && rail('Jump back in', d.jumpBackIn.map((p) => playlistCard(p))),
+    music && rail('Popular artists', (d.artists || []).map((a) => card({
+      title: a.name, sub: 'Artist', cover: a.cover, round: true, fallbackIcon: 'user',
+      onOpen: () => go(`#/artist/${encodeURIComponent(a.name)}`),
+    })), showAll('#/library/artists')),
+    music && rail('New uploads', d.newUploads.map(trackCard(d.newUploads, (t) => `${t.artist} · @${t.owner.username}`)), showAll('#/library/songs')),
+    lists && rail('Your playlists', d.playlists.map((p) => playlistCard(p)), showAll('#/library/playlists')),
   );
-  if (!d.newUploads.length && !d.recentlyPlayed.length) {
+  if (lists && !music && !d.playlists.length && !d.jumpBackIn.length) {
+    put(root, emptyState('library', 'No playlists yet.', h('button', { class: 'btn primary', onclick: async () => {
+      try { go(`#/playlist/${(await createPlaylist()).id}`); } catch (err) { toastError(err); }
+    } }, icon('plus'), 'Create playlist')));
+  }
+  if (music && !d.newUploads.length && !d.recentlyPlayed.length) {
     put(root, emptyState('music', 'Your library is empty. Upload songs or search for free music to get started.',
       h('div', { class: 'row', style: { justifyContent: 'center' } },
         h('a', { class: 'btn primary', href: '#/import' }, icon('upload'), 'Upload music'),
         h('a', { class: 'btn', href: '#/search' }, icon('search'), 'Search'))));
   }
+  return () => main.style.removeProperty('--top-tint');
 }
 
 function playlistCard(p) {
@@ -140,7 +170,7 @@ function renderResults(root, r) {
 // ---------------------------------------------------------------- library
 export async function libraryView(root, params) {
   const tab = params.tab || 'playlists';
-  const tabs = [['playlists', 'Playlists'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists']];
+  const tabs = [['playlists', 'Playlists'], ['uploads', 'Uploads'], ['songs', 'Songs'], ['albums', 'Albums'], ['artists', 'Artists']];
   put(root, 
     h('div', { class: 'row' }, h('h1', { style: { flex: 1 } }, 'Your Library'),
       h('a', { class: 'btn sm', href: '#/import' }, icon('upload'), 'Import')),
@@ -161,6 +191,21 @@ export async function libraryView(root, params) {
         }),
         mine.map(playlistCard)),
       others.length ? [h('h2', {}, 'From other listeners'), h('div', { class: 'grid' }, others.map(playlistCard))] : null);
+  } else if (tab === 'uploads') {
+    const [mine, users] = await Promise.all([get(`/users/${encodeURIComponent(state.user.username)}`), get('/users')]);
+    const others = users.filter((u) => u.id !== state.user.id);
+    const reload = () => libraryView(clear(root), params);
+    put(clear(body),
+      h('h2', {}, `Your uploads · ${mine.uploads.length}`),
+      mine.uploads.length
+        ? [h('div', { class: 'action-bar' },
+            h('button', { class: 'play-fab', 'aria-label': 'Play your uploads', onclick: () => playItems(mine.uploads, 0) }, icon('play')),
+            iconBtn('shuffle', 'Shuffle play', () => shufflePlay(mine.uploads)),
+            h('div', { class: 'spacer' }),
+            h('a', { class: 'btn sm', href: '#/import' }, icon('upload'), 'Upload more')),
+          trackList(mine.uploads, { onDeleted: reload })]
+        : emptyState('upload', 'You haven\'t uploaded any music yet.', h('a', { class: 'btn primary', href: '#/import' }, 'Upload your music')),
+      others.length ? [h('h2', {}, 'Uploads by other listeners'), h('div', { class: 'grid' }, others.map(uploaderCard))] : null);
   } else if (tab === 'songs') {
     const sortSel = h('select', { class: 'input', style: { width: 'auto', height: '36px' }, 'aria-label': 'Sort' },
       h('option', { value: 'recent' }, 'Recently added'), h('option', { value: 'title' }, 'Title'), h('option', { value: 'artist' }, 'Artist'));
@@ -226,6 +271,7 @@ export async function playlistView(root, params) {
     put(root, h('div', { class: 'action-bar' },
       h('button', { class: 'play-fab', 'aria-label': 'Play', disabled: !p.tracks.length, onclick: () => playItems(p.tracks, 0, { playlistId: p.id }) }, icon('play')),
       iconBtn('shuffle', 'Shuffle play', () => shufflePlay(p.tracks, { playlistId: p.id })),
+      iconBtn('link', 'Copy link', () => copyLink(`${location.origin}/#/playlist/${p.id}`)),
       mine ? iconBtn('more', 'More options', (e) => menu(e.currentTarget, [
         { label: 'Edit details', icon: 'edit', onClick: () => editDetails(p, render) },
         { label: 'Change cover', icon: 'upload', onClick: () => coverNode.click() },
@@ -258,6 +304,15 @@ export async function playlistView(root, params) {
   return on('playlist-changed', (e) => e.detail === params.id && render());
 }
 
+async function copyLink(url) {
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Link copied. Anyone signed in can listen; only you can edit.');
+  } catch {
+    window.prompt('Copy this link:', url);
+  }
+}
+
 function editDetails(p, after) {
   const name = h('input', { class: 'input', value: p.name, maxlength: 100, 'aria-label': 'Name' });
   const desc = h('textarea', { class: 'input', rows: 3, maxlength: 300, placeholder: 'Add an optional description', style: { height: 'auto', padding: '10px 16px', resize: 'vertical' } }, p.description || '');
@@ -279,6 +334,143 @@ function pickImage(cb) {
   const input = h('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
   input.onchange = () => input.files[0] && cb(input.files[0]);
   input.click();
+}
+
+// ---------------------------------------------------------------- uploaders
+function uploaderCard(u) {
+  return card({
+    title: u.username, sub: `${u.uploadCount} upload${u.uploadCount === 1 ? '' : 's'}`,
+    coverNode: avatarEl(u, 'card-avatar'),
+    onOpen: () => go(`#/user/${encodeURIComponent(u.username)}`),
+  });
+}
+
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+// Instagram-style profile: avatar + counts, bio, follow/message, tabbed square grid.
+export async function userView(root, params) {
+  put(root, loading());
+  const d = await get(`/users/${encodeURIComponent(params.name)}`);
+  const u = d.user;
+  const me = u.id === state.user.id;
+  const tab = new URLSearchParams(params.query || '').get('tab') === 'playlists' ? 'playlists' : 'songs';
+  const href = (t) => `#/user/${encodeURIComponent(u.username)}${t === 'songs' ? '' : `?tab=${t}`}`;
+  clear(root);
+
+  const followersN = h('b', {}, String(d.followers));
+  const stat = (n, label, onclick) => h('button', { class: 'ig-stat', onclick, disabled: !onclick }, typeof n === 'object' ? n : h('b', {}, String(n)), h('span', {}, label));
+
+  const followBtn = h('button', { class: 'btn sm' });
+  const paintFollow = (on) => {
+    followBtn.className = `btn sm ${on ? '' : 'primary'}`;
+    followBtn.textContent = on ? 'Following' : d.followsYou ? 'Follow back' : 'Follow';
+    followBtn.setAttribute('aria-pressed', String(on));
+  };
+  paintFollow(d.isFollowing);
+  followBtn.onclick = async () => {
+    followBtn.disabled = true;
+    try {
+      const r = await (d.isFollowing ? del : post)(`/users/${encodeURIComponent(u.username)}/follow`);
+      d.isFollowing = r.isFollowing;
+      followersN.textContent = String(r.followers);
+      paintFollow(r.isFollowing);
+    } catch (err) { toastError(err); }
+    followBtn.disabled = false;
+  };
+
+  const actions = me
+    ? [h('button', { class: 'btn sm', onclick: () => editProfile(u, () => userView(clear(root), params)) }, 'Edit profile'),
+      h('a', { class: 'btn sm', href: '#/import' }, icon('upload'), 'Upload')]
+    : [followBtn, h('a', { class: 'btn sm', href: `#/messages/${encodeURIComponent(u.username)}` }, 'Message')];
+  if (d.uploads.length) {
+    actions.push(h('button', { class: 'btn sm icon-only', 'aria-label': 'Shuffle play', title: 'Shuffle play', onclick: () => shufflePlay(d.uploads) }, icon('shuffle')));
+  }
+
+  put(root,
+    h('header', { class: 'ig-head' },
+      h('div', { class: 'ig-ring' }, avatarEl(u, 'ig-avatar')),
+      h('div', { class: 'ig-name' }, h('h1', {}, u.username), h('div', { class: 'ig-actions' }, actions)),
+      h('div', { class: 'ig-stats' },
+        stat(d.uploads.length, d.uploads.length === 1 ? 'song' : 'songs', null),
+        stat(followersN, 'followers', () => peopleList(`${u.username}'s followers`, `/users/${encodeURIComponent(u.username)}/followers`)),
+        stat(d.following, 'following', () => peopleList(`${u.username} follows`, `/users/${encodeURIComponent(u.username)}/following`))),
+      h('div', { class: 'ig-bio' },
+        d.followsYou && !me ? h('span', { class: 'pill' }, 'Follows you') : null,
+        u.bio ? h('p', {}, u.bio) : me ? h('p', { class: 'dim' }, 'Add a bio so people know what you play.') : null,
+        h('div', { class: 'dim small' }, `Joined ${new Date(u.createdAt).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}`))),
+    h('nav', { class: 'ig-tabs' },
+      h('a', { href: href('songs'), class: tab === 'songs' ? 'active' : '' }, icon('grid'), h('span', {}, 'Songs')),
+      h('a', { href: href('playlists'), class: tab === 'playlists' ? 'active' : '' }, icon('library'), h('span', {}, 'Playlists'))));
+
+  if (tab === 'songs') {
+    if (!d.uploads.length) {
+      put(root, emptyState('music', me ? 'Share your first song.' : 'No songs yet.',
+        me ? h('a', { class: 'btn primary', href: '#/import' }, 'Upload your music') : null));
+      return;
+    }
+    const grid = h('div', { class: 'ig-grid' }, d.uploads.map((t, i) => {
+      const tile = h('div', { class: 'ig-tile', dataset: { id: t.id }, tabindex: 0, role: 'button', 'aria-label': `Play ${t.title}`,
+        onclick: () => playItems(d.uploads, i),
+        onkeydown: (e) => e.key === 'Enter' && playItems(d.uploads, i) },
+      coverEl(t.cover, '', 'music', t.title),
+      h('div', { class: 'ig-over' }, icon('play')),
+      h('div', { class: 'ig-cap' }, h('b', {}, t.title), h('span', {}, t.artist)),
+      h('button', { class: 'ig-more', 'aria-label': `More options for ${t.title}`, onclick: (e) => {
+        e.stopPropagation();
+        trackMenu(e.currentTarget, t, { onDeleted: () => userView(clear(root), params) });
+      } }, icon('more')));
+      return tile;
+    }));
+    const mark = () => grid.querySelectorAll('.ig-tile').forEach((el) => el.classList.toggle('playing', el.dataset.id === state.player?.current?.id));
+    mark();
+    put(root, grid);
+    state.player.addEventListener('change', mark);
+    return () => state.player.removeEventListener('change', mark);
+  }
+  put(root, d.playlists.length
+    ? h('div', { class: 'grid' }, d.playlists.map(playlistCard))
+    : emptyState('library', me ? 'You haven\'t made any playlists yet.' : 'No playlists yet.'));
+}
+
+function peopleList(title, url) {
+  const body = h('div', { class: 'people' }, loading());
+  const m = modal(title, body, [{ label: 'Close', cls: 'ghost', onClick: (close) => close() }]);
+  get(url).then((people) => {
+    put(clear(body), people.length
+      ? people.map((p) => h('a', { class: 'person', href: `#/user/${encodeURIComponent(p.username)}`, onclick: () => m.close() },
+        avatarEl(p), h('div', { class: 'meta' }, h('b', {}, p.username), p.bio ? h('span', { class: 'dim' }, p.bio) : null)))
+      : h('div', { class: 'empty' }, 'Nobody here yet.'));
+  }).catch((err) => { m.close(); toastError(err); });
+}
+
+function editProfile(u, after) {
+  const bio = h('textarea', { class: 'input bio-input', maxlength: 150, rows: 3, placeholder: 'Bio' });
+  bio.value = u.bio || '';
+  const count = h('div', { class: 'dim small', style: { textAlign: 'right' } });
+  const upd = () => (count.textContent = `${bio.value.length}/150`);
+  bio.addEventListener('input', upd);
+  upd();
+  const photo = h('button', { class: 'btn sm', type: 'button', onclick: () => pickImage(async (file) => {
+    try {
+      const nu = await uploadImage('/me/avatar', file);
+      state.user = nu;
+      session.set(null, nu);
+      emit('user');
+      toast('Photo updated');
+    } catch (err) { toastError(err); }
+  }) }, 'Change photo');
+  modal('Edit profile', h('div', { class: 'edit-profile' }, photo, bio, count), [
+    { label: 'Cancel', cls: 'ghost', onClick: (close) => close() },
+    { label: 'Save', cls: 'primary', onClick: async (close) => {
+      try {
+        const nu = await patch('/me', { bio: bio.value });
+        state.user = nu;
+        session.set(null, nu);
+        close();
+        after();
+      } catch (err) { toastError(err); }
+    } },
+  ]);
 }
 
 // ---------------------------------------------------------------- album / artist / liked
@@ -342,7 +534,10 @@ export async function importView(root) {
       const r = await uploadFiles(files, (p) => { bar.style.width = `${Math.round(p * 100)}%`; label.textContent = p < 1 ? `Uploading… ${Math.round(p * 100)}%` : 'Reading tags…'; });
       clear(status);
       if (r.tracks?.length) {
-        put(status, h('p', { style: { color: 'var(--ok)' } }, `Added ${r.tracks.length} song(s).`), trackList(r.tracks));
+        const fresh = r.tracks.length - (r.duplicates?.length || 0);
+        put(status, fresh ? h('p', { style: { color: 'var(--ok)' } }, `Added ${fresh} song(s).`) : null,
+          r.duplicates?.length ? h('p', { class: 'muted' }, `${r.duplicates.length} already in the library: ${r.duplicates.map((d) => d.file).join(', ')}`) : null,
+          trackList(r.tracks));
         emit('library');
       }
       for (const e of r.errors || []) put(status, h('p', { style: { color: 'var(--danger)' } }, `${e.file}: ${e.error}`));
@@ -362,10 +557,15 @@ export async function importView(root) {
   const renderJob = (j) => {
     const pct = j.status === 'done' ? 100 : Math.round((j.progress || 0) * 100);
     const statusText = j.status === 'downloading' ? (j.total ? `${pct}%` : `${(j.bytes / 1048576).toFixed(1)} MB`) : j.status;
+    const act = (path, label, ic) => iconBtn(ic, label, async () => {
+      try { renderJob(await post(`/downloads/${j.id}/${path}`)); } catch (err) { toastError(err); }
+    }, 'small');
+    const action = ['queued', 'downloading'].includes(j.status) ? act('cancel', 'Cancel download', 'close')
+      : ['error', 'canceled'].includes(j.status) ? act('retry', 'Retry download', 'sync') : null;
     const el = h('div', { class: 'job', dataset: { id: j.id } },
       h('div', { class: 'title', title: j.url }, j.title || j.url),
-      h('div', { class: `status ${j.status}` }, statusText),
-      j.status !== 'error' ? h('div', { class: 'progress' }, h('div', { style: { width: `${j.status === 'processing' ? 100 : pct}%` } })) : null,
+      h('div', { class: 'job-right' }, h('div', { class: `status ${j.status}` }, statusText), action),
+      !['error', 'canceled'].includes(j.status) ? h('div', { class: 'progress' }, h('div', { style: { width: `${j.status === 'processing' ? 100 : pct}%` } })) : null,
       j.error ? h('div', { class: 'err' }, j.error) : null);
     const old = jobsEl.querySelector(`[data-id="${CSS.escape(j.id)}"]`);
     if (old) old.replaceWith(el);
@@ -540,8 +740,150 @@ export async function profileView(root) {
         h('div', {}, h('div', { class: 'muted', style: { fontSize: '12px', fontWeight: 700, textTransform: 'uppercase' } }, 'Profile'),
           h('h1', { style: { margin: '4px 0' } }, u.username),
           h('div', { class: 'muted' }, `Member since ${new Date(u.createdAt).toLocaleDateString()} · ${state.playlists.length} playlists`))),
+      h('a', { class: 'btn', href: `#/user/${encodeURIComponent(u.username)}`, style: { marginTop: '16px' } }, icon('upload'), 'Your uploads'),
+      passwordForm(),
       h('button', { class: 'btn ghost', onclick: () => emit('logout') }, icon('logout'), 'Log out'));
+  };
+  const passwordForm = () => {
+    const field = (label, auto) => h('input', { class: 'input', type: 'password', placeholder: label, 'aria-label': label, autocomplete: auto, required: true, minlength: 6, maxlength: 128 });
+    const cur = field('Current password', 'current-password');
+    const next = field('New password', 'new-password');
+    const again = field('Repeat new password', 'new-password');
+    const submit = async (e) => {
+      e.preventDefault();
+      if (next.value !== again.value) return toast('New passwords don\'t match', 'error');
+      try {
+        await post('/me/password', { currentPassword: cur.value, newPassword: next.value });
+        e.target.reset();
+        toast('Password changed');
+      } catch (err) { toastError(err); }
+    };
+    return h('form', { class: 'panel pw-form', onsubmit: submit },
+      h('h2', { style: { marginTop: 0 } }, 'Change password'), cur, next, again,
+      h('button', { class: 'btn primary', type: 'submit' }, 'Update password'));
   };
   render(me);
 }
 
+
+// ---------------------------------------------------------------- direct messages
+const timeAgo = (ts) => {
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return 'now';
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  if (s < 604800) return `${Math.floor(s / 86400)}d`;
+  return new Date(ts).toLocaleDateString();
+};
+
+export async function messagesView(root) {
+  put(root, loading());
+  const render = async () => {
+    const convos = await get('/dms');
+    put(clear(root), h('div', { class: 'dm-title' }, h('h1', {}, 'Messages')),
+      convos.length
+        ? h('div', { class: 'inbox' }, convos.map((c) => h('a', { class: `convo${c.unread ? ' unread' : ''}`, href: `#/messages/${encodeURIComponent(c.user.username)}` },
+          avatarEl(c.user, 'convo-av'),
+          h('div', { class: 'meta' },
+            h('b', {}, c.user.username),
+            h('span', { class: 'last' }, c.last.from === state.user.id ? `You: ${c.last.text}` : c.last.text, h('span', { class: 'dim' }, ` · ${timeAgo(c.last.createdAt)}`))),
+          c.unread ? h('span', { class: 'badge' }, String(c.unread)) : null)))
+        : emptyState('message', 'No messages yet. Open someone\'s profile and tap Message to start a chat.',
+          h('a', { class: 'btn', href: '#/library/uploads' }, 'Find people')));
+  };
+  await render();
+  return on('dm', () => render().catch(() => {}));
+}
+
+// Instagram-style profile card at the top of a chat, plus the person's music.
+function dmIntro(p, empty) {
+  const u = p.user;
+  const profile = `#/user/${encodeURIComponent(u.username)}`;
+  const songs = p.uploads.slice(0, 12);
+  return h('div', { class: 'dm-intro' },
+    h('a', { href: profile, class: 'ig-ring' }, avatarEl(u, 'ig-avatar')),
+    h('b', { class: 'dm-intro-name' }, u.username),
+    h('div', { class: 'dim small' }, `${plural(p.uploads.length, 'song')} · ${plural(p.followers, 'follower')}`),
+    u.bio ? h('p', { class: 'dm-intro-bio' }, u.bio) : null,
+    h('a', { class: 'btn sm', href: profile }, 'View profile'),
+    songs.length
+      ? h('div', { class: 'dm-music' },
+        h('div', { class: 'dm-music-head' }, h('span', {}, `${u.username}'s music`),
+          p.uploads.length > songs.length ? h('a', { class: 'show-all', href: profile }, 'Show all') : null),
+        h('div', { class: 'dm-music-row' }, songs.map((t, i) => h('button', {
+          class: 'dm-song', title: `${t.title} · ${t.artist}`, 'aria-label': `Play ${t.title}`, dataset: { id: t.id },
+          onclick: () => playItems(p.uploads, i),
+        }, coverEl(t.cover, '', 'music', t.title), h('span', { class: 'tt' }, t.title), h('span', { class: 'ta' }, t.artist)))))
+      : h('div', { class: 'dim small' }, `${u.username} hasn't shared any music yet.`),
+    empty ? h('div', { class: 'dm-hi dim' }, 'No messages yet. Say hi!') : null);
+}
+
+export async function chatView(root, params) {
+  put(root, loading());
+  const name = decodeURIComponent(params.name);
+  const [d, prof] = await Promise.all([
+    get(`/dms/${encodeURIComponent(name)}`),
+    get(`/users/${encodeURIComponent(name)}`),
+  ]);
+  const other = d.user;
+  if (other.id === state.user.id) return go('#/messages');
+  emit('dm:seen');
+  const log = h('div', { class: 'dm-log' }, dmIntro(prof, !d.messages.length));
+  const seen = new Set();
+  let lastDay = '';
+  const addMsg = (m) => {
+    if (seen.has(m.id)) return;
+    seen.add(m.id);
+    const day = new Date(m.createdAt).toDateString();
+    if (day !== lastDay) {
+      lastDay = day;
+      log.append(h('div', { class: 'dm-day' }, day === new Date().toDateString() ? 'Today' : new Date(m.createdAt).toLocaleDateString()));
+    }
+    log.append(h('div', { class: `bubble ${m.from === state.user.id ? 'mine' : 'theirs'}`, title: new Date(m.createdAt).toLocaleString() }, m.text));
+  };
+  const scroll = () => (log.scrollTop = log.scrollHeight);
+  d.messages.forEach(addMsg);
+
+  const input = h('textarea', { class: 'input dm-input', rows: 1, maxlength: 2000, placeholder: 'Message…', 'aria-label': 'Message' });
+  const sendBtn = h('button', { class: 'icon-btn dm-send', type: 'submit', 'aria-label': 'Send' }, icon('send'));
+  const send = async () => {
+    const text = input.value.trim();
+    if (!text) return;
+    sendBtn.disabled = true;
+    try {
+      addMsg(await post(`/dms/${encodeURIComponent(other.username)}`, { text }));
+      input.value = '';
+      scroll();
+    } catch (err) { toastError(err); }
+    sendBtn.disabled = false;
+    input.focus();
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+
+  put(clear(root), h('div', { class: 'dm' },
+    h('div', { class: 'dm-head' },
+      h('a', { class: 'icon-btn', href: '#/messages', 'aria-label': 'Back to messages' }, icon('back')),
+      h('a', { class: 'dm-who', href: `#/user/${encodeURIComponent(other.username)}` }, avatarEl(other), h('b', {}, other.username))),
+    log,
+    h('form', { class: 'dm-form', onsubmit: (e) => { e.preventDefault(); send(); } }, input, sendBtn)));
+  scroll();
+  input.focus();
+
+  const mark = () => log.querySelectorAll('.dm-song').forEach((el) => el.classList.toggle('playing', el.dataset.id === state.player?.current?.id));
+  mark();
+  state.player.addEventListener('change', mark);
+  const off = on('dm', (e) => {
+    const m = e.detail;
+    const mine = m.from === state.user.id && m.to === other.id;
+    const theirs = m.from === other.id && m.to === state.user.id;
+    if (!mine && !theirs) return;
+    log.querySelector('.dm-hi')?.remove();
+    addMsg(m);
+    scroll();
+    // Mark as read while the chat is open.
+    if (theirs) get(`/dms/${encodeURIComponent(other.username)}`).then(() => emit('dm:seen')).catch(() => {});
+  });
+  return () => { off(); state.player.removeEventListener('change', mark); };
+}

@@ -29,6 +29,8 @@ export class RoomClient extends EventTarget {
       this.dispatchEvent(new CustomEvent('chat', { detail: msg }));
     });
     this.socket.on('download:update', (job) => emit('download', job));
+    this.socket.on('dm', (msg) => emit('dm', msg));
+    this.socket.on('dm:read', (e) => emit('dm:read', e));
   }
 
   get isHost() {

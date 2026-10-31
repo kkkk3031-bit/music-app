@@ -123,6 +123,52 @@ object Api {
     /** Saves an online result as a proxied track (idempotent server-side). */
     suspend fun ensureTrack(t: Track): Track = if (t.remote == null) t else Track.from(obj("POST", "/tracks/remote", t.remote))
 
+    suspend fun uploaders() = arr("/users").mapObjects(Uploader::from)
+    suspend fun userUploads(username: String) =
+        obj("GET", "/users/" + URLEncoder.encode(username, "UTF-8")).getJSONArray("uploads").mapObjects(Track::from)
+
+    // ---------- social ----------
+    private fun enc(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+    suspend fun profile(username: String) = Profile.from(obj("GET", "/users/" + enc(username)))
+    suspend fun setFollowing(username: String, follow: Boolean): JSONObject =
+        obj(if (follow) "POST" else "DELETE", "/users/" + enc(username) + "/follow")
+    suspend fun followers(username: String) = arr("/users/" + enc(username) + "/followers").mapObjects(Person::from)
+    suspend fun following(username: String) = arr("/users/" + enc(username) + "/following").mapObjects(Person::from)
+    suspend fun setBio(bio: String) = Person.from(obj("PATCH", "/me", JSONObject().put("bio", bio)))
+
+    suspend fun conversations() = arr("/dms").mapObjects(Conversation::from)
+    suspend fun unreadCount() = obj("GET", "/dms/unread").optInt("count")
+    /** Loads the thread and marks incoming messages as read. */
+    suspend fun thread(username: String): Pair<Person, List<Message>> {
+        val r = obj("GET", "/dms/" + enc(username))
+        return Person.from(r.getJSONObject("user")) to r.getJSONArray("messages").mapObjects(Message::from)
+    }
+    suspend fun sendDm(username: String, text: String) =
+        Message.from(obj("POST", "/dms/" + enc(username), JSONObject().put("text", text)))
+
+    /** Uploads a profile picture (multipart field "image"). */
+    suspend fun uploadAvatar(context: Context, uri: Uri): Person = withContext(Dispatchers.IO) {
+        val boundary = "----cadence" + UUID.randomUUID().toString().replace("-", "")
+        val cr = context.contentResolver
+        val mime = cr.getType(uri) ?: "image/jpeg"
+        val bytes = cr.openInputStream(uri)?.use { it.readBytes() } ?: throw ApiException(400, "Could not read the image")
+        val conn = URL("$baseUrl/api/me/avatar").openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Authorization", "Bearer $token")
+            conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            conn.outputStream.use { out ->
+                out.write("--$boundary\r\nContent-Disposition: form-data; name=\"image\"; filename=\"avatar\"\r\nContent-Type: $mime\r\n\r\n".toByteArray())
+                out.write(bytes)
+                out.write("\r\n--$boundary--\r\n".toByteArray())
+            }
+            Person.from(readResponse(conn, "/me/avatar") as JSONObject)
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     suspend fun downloads() = arr("/downloads").mapObjects(DownloadJob::from)
     suspend fun download(url: String) { request("POST", "/downloads", JSONObject().put("url", url)) }
 
@@ -173,9 +219,11 @@ object Api {
             val r = runCatching { JSONObject(text) }.getOrNull()
             val ok = r?.optJSONArray("tracks")?.length() ?: 0
             val errors = r?.optJSONArray("errors")?.mapObjects { "${it.optString("file")}: ${it.optString("error")}" } ?: emptyList()
+            val dups = r?.optJSONArray("duplicates")?.length() ?: 0
             if (ok == 0 && errors.isEmpty()) throw ApiException(code, r?.optString("error") ?: "Upload failed ($code)")
             buildString {
-                append("Added $ok song(s).")
+                if (ok - dups > 0) append("Added ${ok - dups} song(s).")
+                if (dups > 0) append(if (isEmpty()) "" else "\n").append("$dups already in the library.")
                 errors.forEach { append("\n").append(it) }
             }
         } finally {

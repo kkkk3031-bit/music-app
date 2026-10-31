@@ -16,3 +16,4 @@ android/captures/
 *.jks
 
 .DS_Store
+*.apk

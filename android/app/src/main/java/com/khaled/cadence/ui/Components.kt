@@ -79,6 +79,11 @@ object Dialogs {
     var addTo by mutableStateOf<Track?>(null)
 }
 
+/** Lets deep components (track menus) navigate without threading `open` through every call. */
+object Nav {
+    var open: (com.khaled.cadence.Route) -> Unit = {}
+}
+
 @Composable
 fun TrackRow(
     track: Track,
@@ -141,6 +146,12 @@ fun TrackRow(
                     menu = false
                     Dialogs.addTo = track
                 })
+                track.ownerName?.takeIf { track.ownerId != Api.userId }?.let { owner ->
+                    DropdownMenuItem(text = { Text("View $owner's profile") }, onClick = {
+                        menu = false
+                        Nav.open(com.khaled.cadence.Route.UserProfile(owner))
+                    })
+                }
                 if (track.remote != null) {
                     DropdownMenuItem(text = { Text("Download to library") }, onClick = {
                         menu = false

@@ -22,6 +22,10 @@ object RoomClient {
     val chat = MutableStateFlow<List<JSONObject>>(emptyList())
     val downloads = MutableStateFlow<JSONObject?>(null)
     val connected = MutableStateFlow(false)
+    /** Latest direct message pushed by the server (sent or received). */
+    val dm = MutableStateFlow<JSONObject?>(null)
+    /** Bumped whenever the unread DM count may have changed. */
+    val dmTick = MutableStateFlow(0)
 
     val isHost get() = room.value?.optString("hostId") == Api.userId
 
@@ -44,6 +48,8 @@ object RoomClient {
         s.on("room:chat") { args ->
             (args.firstOrNull() as? JSONObject)?.let { msg -> chat.value = (chat.value + msg).takeLast(200) }
         }
+        s.on("dm") { args -> (args.firstOrNull() as? JSONObject)?.let { m -> main.post { dm.value = m; dmTick.value++ } } }
+        s.on("dm:read") { main.post { dmTick.value++ } }
         s.on("download:update") { args -> (args.firstOrNull() as? JSONObject)?.let { downloads.value = it } }
         socket = s
         s.connect()

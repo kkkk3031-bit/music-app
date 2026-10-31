@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-const EMPTY = () => ({ users: [], tracks: [], playlists: [] });
+const EMPTY = () => ({ users: [], tracks: [], playlists: [], messages: [] });
 
 export function newId() {
   return crypto.randomBytes(9).toString('base64url');
@@ -26,6 +26,7 @@ export class Store {
   get users() { return this.data.users; }
   get tracks() { return this.data.tracks; }
   get playlists() { return this.data.playlists; }
+  get messages() { return this.data.messages; }
 
   user(id) { return this.data.users.find((u) => u.id === id); }
   track(id) { return this.data.tracks.find((t) => t.id === id); }

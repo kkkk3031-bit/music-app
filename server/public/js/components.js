@@ -1,4 +1,4 @@
-import { h, icon, iconBtn, fmtTime, coverEl, menu, toast, toastError, confirmDialog, prompt } from './dom.js';
+import { h, icon, iconBtn, fmtTime, coverEl, menu, toast, toastError, confirmDialog, prompt, modal } from './dom.js';
 import { post, put, del } from './api.js';
 import { state, emit, refreshPlaylists } from './state.js';
 
@@ -109,6 +109,33 @@ export async function downloadToLibrary(item) {
   } catch (err) {
     toastError(err);
   }
+}
+
+/** LRC text → [{ time, text }] sorted by time; lines may carry several stamps. */
+export function parseLrc(text) {
+  const out = [];
+  for (const line of String(text || '').split('\n')) {
+    const stamps = [...line.matchAll(/\[(\d{1,3}):(\d{2}(?:[.:]\d{1,3})?)\]/g)];
+    if (!stamps.length) continue;
+    const words = line.replace(/\[[^\]]*\]/g, '').trim();
+    for (const m of stamps) out.push({ time: Number(m[1]) * 60 + Number(m[2].replace(':', '.')), text: words });
+  }
+  return out.sort((a, b) => a.time - b.time);
+}
+
+export function editLyrics(track, current, after) {
+  const area = h('textarea', { class: 'input lyrics-edit', rows: 14, maxlength: 20000, placeholder: 'Paste lyrics. LRC timestamps like [01:23.45] make them sync with the song.' }, current || '');
+  modal(`Lyrics · ${track.title}`, area, [
+    { label: 'Cancel', cls: 'ghost', onClick: (c) => c() },
+    { label: 'Save', cls: 'primary', onClick: async (close) => {
+      try {
+        const r = await put(`/tracks/${track.id}/lyrics`, { lyrics: area.value });
+        track.hasLyrics = Boolean(r.lyrics);
+        close();
+        after?.(r);
+      } catch (err) { toastError(err); }
+    } },
+  ]);
 }
 
 export function trackMenu(anchor, track, { onRemove, onDeleted } = {}) {
@@ -267,9 +294,9 @@ export function makeSortable(container, itemSel, handleSel, onMove) {
   });
 }
 
-export function card({ title, sub, cover, round = false, onOpen, onPlay, coverNode }) {
+export function card({ title, sub, cover, round = false, onOpen, onPlay, coverNode, fallbackIcon = 'music' }) {
   return h('div', { class: 'card', onclick: onOpen, tabindex: 0, onkeydown: (e) => e.key === 'Enter' && onOpen?.() },
-    coverNode || coverEl(cover, round ? 'round' : ''),
+    coverNode || coverEl(cover, round ? 'round' : '', fallbackIcon, title),
     onPlay ? h('button', { class: 'play-fab card-play', 'aria-label': `Play ${title}`, onclick: (e) => { e.stopPropagation(); onPlay(); } }, icon('play')) : null,
     h('div', { class: 'title' }, title),
     h('div', { class: 'sub' }, sub));

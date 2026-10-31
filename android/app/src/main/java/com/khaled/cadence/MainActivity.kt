@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Home
@@ -60,6 +62,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -88,9 +91,14 @@ import com.khaled.cadence.ui.LoginScreen
 import com.khaled.cadence.ui.Muted
 import com.khaled.cadence.ui.Accent
 import com.khaled.cadence.ui.PlaylistScreen
-import com.khaled.cadence.ui.ProfileScreen
+import com.khaled.cadence.ui.Badge
+import com.khaled.cadence.ui.ChatScreen
+import com.khaled.cadence.ui.InboxScreen
+import com.khaled.cadence.ui.Nav
+import com.khaled.cadence.ui.PeopleScreen
 import com.khaled.cadence.ui.RoomsScreen
 import com.khaled.cadence.ui.SearchScreen
+import com.khaled.cadence.ui.UserProfileScreen
 
 sealed interface Route {
     data object Home : Route
@@ -101,6 +109,10 @@ sealed interface Route {
     data object Liked : Route
     data object Profile : Route
     data class PlaylistDetail(val id: String) : Route
+    data class UserProfile(val username: String) : Route
+    data class People(val username: String, val followers: Boolean) : Route
+    data object Inbox : Route
+    data class Chat(val username: String) : Route
 }
 
 private data class Tab(val route: Route, val label: String, val icon: ImageVector)
@@ -163,6 +175,11 @@ private fun App(onLogout: () -> Unit) {
     val open: (Route) -> Unit = { r -> if (TABS.any { it.route == r }) { stack.clear(); stack.add(r) } else stack.add(r) }
     val back: () -> Unit = { if (stack.size > 1) stack.removeAt(stack.lastIndex) }
     BackHandler(enabled = stack.size > 1 && !nowPlaying && !queueOpen) { back() }
+    Nav.open = open
+    // Unread DM badge: refreshed on start and whenever a DM arrives or is read.
+    val dmTick by RoomClient.dmTick.collectAsState()
+    var unread by remember { mutableStateOf(0) }
+    LaunchedEffect(dmTick) { runCatching { Api.unreadCount() }.onSuccess { unread = it } }
 
     Box(Modifier.fillMaxSize().background(Bg)) {
         Scaffold(
@@ -186,7 +203,9 @@ private fun App(onLogout: () -> Unit) {
                 }
             },
         ) { pad ->
-            Column(Modifier.padding(pad).statusBarsPadding()) {
+            // consumeWindowInsets: screens' imePadding() then only adds the part of the keyboard
+            // not already covered by the bottom bar padding.
+            Column(Modifier.padding(pad).consumeWindowInsets(pad).statusBarsPadding()) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     val room by RoomClient.room.collectAsState()
                     room?.let { r ->
@@ -197,7 +216,13 @@ private fun App(onLogout: () -> Unit) {
                         )
                     }
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { stack.add(Route.Profile) }) { Icon(Icons.Default.Person, "Profile", tint = Muted) }
+                    IconButton(onClick = { open(Route.Inbox) }) {
+                        Box {
+                            Icon(Icons.Default.Email, "Messages", tint = Muted)
+                            if (unread > 0) Box(Modifier.align(Alignment.TopEnd).padding(start = 12.dp)) { Badge(unread) }
+                        }
+                    }
+                    IconButton(onClick = { open(Route.Profile) }) { Icon(Icons.Default.Person, "Profile", tint = Muted) }
                 }
                 Box(Modifier.fillMaxSize()) {
                     when (val r = stack.last()) {
@@ -207,8 +232,12 @@ private fun App(onLogout: () -> Unit) {
                         Route.Rooms -> RoomsScreen()
                         Route.Import -> ImportScreen()
                         Route.Liked -> LikedScreen(back)
-                        Route.Profile -> ProfileScreen(onLogout)
+                        Route.Profile -> UserProfileScreen(Api.username ?: "", open, if (stack.size > 1) back else null, onLogout)
                         is Route.PlaylistDetail -> PlaylistScreen(r.id, back)
+                        is Route.UserProfile -> key(r) { UserProfileScreen(r.username, open, back) }
+                        is Route.People -> key(r) { PeopleScreen(r.username, r.followers, open, back) }
+                        Route.Inbox -> InboxScreen(open, back)
+                        is Route.Chat -> key(r) { ChatScreen(r.username, open, back) }
                     }
                 }
             }

@@ -22,7 +22,7 @@ export function loadSecret(dataDir) {
 }
 
 export function publicUser(u) {
-  return { id: u.id, username: u.username, avatar: u.avatar || null, createdAt: u.createdAt };
+  return { id: u.id, username: u.username, avatar: u.avatar || null, bio: u.bio || '', createdAt: u.createdAt };
 }
 
 export function createAuth({ store, secret }) {
@@ -69,6 +69,8 @@ export function createAuth({ store, secret }) {
       likes: [],
       recent: [],
       recentPlaylists: [],
+      following: [],
+      bio: '',
       createdAt: Date.now(),
     };
     store.users.push(user);
@@ -84,15 +86,27 @@ export function createAuth({ store, secret }) {
     return { token: sign(user), user: publicUser(user) };
   }
 
-  return { requireUser, verify, register, login };
+  async function changePassword(user, current, next) {
+    next = String(next || '');
+    if (!(await bcrypt.compare(String(current || ''), user.passHash))) {
+      throw Object.assign(new Error('Current password is wrong'), { status: 403 });
+    }
+    if (next.length < 6 || next.length > 128) {
+      throw Object.assign(new Error('Password must be 6-128 characters'), { status: 400 });
+    }
+    user.passHash = await bcrypt.hash(next, 10);
+    store.save();
+  }
+
+  return { requireUser, verify, register, login, changePassword };
 }
 
 // Fixed-window limiter keyed by IP, for the auth endpoints.
-export function rateLimit({ windowMs, max }) {
+export function rateLimit({ windowMs, max, key: keyOf = (req) => req.ip }) {
   const hits = new Map();
   return (req, res, next) => {
     const now = Date.now();
-    const key = req.ip;
+    const key = keyOf(req);
     let entry = hits.get(key);
     if (!entry || now > entry.reset) {
       entry = { count: 0, reset: now + windowMs };
@@ -100,7 +114,7 @@ export function rateLimit({ windowMs, max }) {
     }
     if (++entry.count > max) {
       res.set('Retry-After', String(Math.ceil((entry.reset - now) / 1000)));
-      return res.status(429).json({ error: 'Too many attempts, try again later' });
+      return res.status(429).json({ error: 'Too many requests, try again later' });
     }
     if (hits.size > 10000) {
       for (const [k, v] of hits) if (now > v.reset) hits.delete(k);

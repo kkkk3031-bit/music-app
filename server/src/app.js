@@ -11,7 +11,8 @@ import multer from 'multer';
 import { Server as IOServer } from 'socket.io';
 import { Store, newId } from './db.js';
 import { createAuth, loadSecret, publicUser, rateLimit } from './auth.js';
-import { ingestAudio, audioExt, IMAGE_TYPES } from './media.js';
+import { createRequire } from 'node:module';
+import { ingestAudio, audioExt, IMAGE_TYPES, cleanLyrics, isSyncedLyrics, hashFile } from './media.js';
 import { safeFetch, hostAllowed } from './net.js';
 import { searchArchive, searchJamendo, STREAM_HOSTS } from './sources.js';
 import { Downloader } from './downloader.js';
@@ -21,10 +22,14 @@ import { attachSockets } from './sockets.js';
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MAX_UPLOAD = 200 * 1024 * 1024;
 const MAX_RECENT = 50;
+const MAX_BIO = 150;
+const MAX_DM = 2000;
+const MAX_DM_HISTORY = 500;
+const { version: VERSION } = createRequire(import.meta.url)('../package.json');
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 
-export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, ytdlpPath } = {}) {
+export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, dmLimit = { windowMs: 60_000, max: 30 }, ytdlpPath } = {}) {
   const dirs = {
     data: dataDir,
     media: path.join(dataDir, 'media'),
@@ -40,15 +45,34 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
   const server = http.createServer(app);
   const io = new IOServer(server, { cors: { origin: true } });
   const rooms = new RoomManager();
+  // Byte-identical uploads/downloads reuse the existing library track.
+  const findByHash = (hash) => store.tracks.find((t) => t.type === 'local' && t.hash === hash) || null;
+  // Tracks from before hashing existed get one in the background.
+  (async () => {
+    for (const t of store.tracks.filter((x) => x.type === 'local' && !x.hash)) {
+      t.hash = await hashFile(path.join(dirs.media, path.basename(t.file))).catch(() => null);
+    }
+    store.save();
+  })();
   const downloader = new Downloader({
     store,
     dirs,
     ytdlpPath: ytdlpPath ?? process.env.YTDLP_PATH ?? '/home/dev/bin/yt-dlp',
     onUpdate: (job) => io.to(`user:${job.userId}`).emit('download:update', job),
+    findByHash,
   });
 
   // ---------- serializers ----------
   const userName = (id) => store.user(id)?.username || 'unknown';
+  // Accounts created before follows existed have no list yet.
+  const followingOf = (u) => (u.following ||= []);
+  const followersOf = (u) => store.users.filter((x) => x.following?.includes(u.id));
+  const findUser = (name) => {
+    const lower = String(name).toLowerCase();
+    const u = store.users.find((x) => x.username.toLowerCase() === lower);
+    if (!u) throw httpError(404, 'User not found');
+    return u;
+  };
 
   function publicTrack(t, viewer) {
     if (!t) return null;
@@ -65,6 +89,7 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
       cover: t.cover,
       owner: { id: t.ownerId, username: userName(t.ownerId) },
       liked: viewer ? viewer.likes.includes(t.id) : false,
+      hasLyrics: Boolean(t.lyrics),
       streamUrl: `/api/tracks/${t.id}/stream`,
       createdAt: t.createdAt,
     };
@@ -154,7 +179,7 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
     res.json({
       ok: true,
       name: 'Cadence',
-      version: '0.1.0',
+      version: VERSION,
       uptime: Math.round(process.uptime()),
       features: { jamendo: Boolean(process.env.JAMENDO_CLIENT_ID), ytdlp: Boolean(downloader.ytdlpPath) },
     });
@@ -181,6 +206,17 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
     res.json(publicUser(req.user));
   });
 
+  api.post('/me/password', limiter, async (req, res) => {
+    await auth.changePassword(req.user, req.body?.currentPassword, req.body?.newPassword);
+    res.status(204).end();
+  });
+
+  api.patch('/me', (req, res) => {
+    if (typeof req.body?.bio === 'string') req.user.bio = req.body.bio.replace(/\s+\n/g, '\n').trim().slice(0, MAX_BIO);
+    store.save();
+    res.json(publicUser(req.user));
+  });
+
   api.get('/me/likes', (req, res) => {
     const tracks = req.user.likes.map((id) => store.track(id)).filter(Boolean).reverse();
     res.json(tracks.map((t) => publicTrack(t, req.user)));
@@ -199,6 +235,18 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
     res.status(204).end();
   });
 
+  function topArtists() {
+    const by = new Map();
+    for (const t of localTracks()) {
+      if (!t.artist || /^unknown artist$/i.test(t.artist)) continue;
+      const a = by.get(t.artist) || { name: t.artist, cover: null, count: 0 };
+      a.count++;
+      a.cover ||= t.cover || null;
+      by.set(t.artist, a);
+    }
+    return [...by.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)).slice(0, 12);
+  }
+
   api.get('/home', (req, res) => {
     const u = req.user;
     const recent = u.recent.map((id) => store.track(id)).filter(Boolean).slice(0, 12);
@@ -208,6 +256,8 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
       jumpBackIn: jumpBack.map((p) => publicPlaylist(p, u)),
       playlists: store.playlists.filter((p) => p.ownerId === u.id).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 8).map((p) => publicPlaylist(p, u)),
       newUploads: localTracks().sort(byNewest).slice(0, 12).map((t) => publicTrack(t, u)),
+      fromFollowing: localTracks().filter((t) => followingOf(u).includes(t.ownerId)).sort(byNewest).slice(0, 12).map((t) => publicTrack(t, u)),
+      artists: topArtists(),
       likedCount: u.likes.filter((id) => store.track(id)).length,
     });
   });
@@ -228,17 +278,19 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
     if (!files.length) throw httpError(400, 'No audio files received (mp3, m4a, aac, ogg, opus, webm, flac, wav)');
     const tracks = [];
     const errors = [];
+    const duplicates = [];
     for (const f of files) {
       try {
-        const t = await ingestAudio({ tmpPath: f.path, originalName: f.originalname, mime: f.mimetype, ownerId: req.user.id, dirs });
-        store.tracks.push(t);
+        const t = await ingestAudio({ tmpPath: f.path, originalName: f.originalname, mime: f.mimetype, ownerId: req.user.id, dirs, findByHash });
+        if (store.track(t.id)) duplicates.push({ file: f.originalname, trackId: t.id });
+        else store.tracks.push(t);
         tracks.push(publicTrack(t, req.user));
       } catch (err) {
         errors.push({ file: f.originalname, error: err.message });
       }
     }
     store.save();
-    res.status(tracks.length ? 201 : 415).json({ tracks, errors });
+    res.status(tracks.length ? 201 : 415).json({ tracks, errors, duplicates });
   });
 
   // Save an online search result as a playable (proxied) track.
@@ -305,6 +357,23 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
       if (v) res.set(h, v);
     }
     Readable.fromWeb(up.body).on('error', () => res.destroy()).pipe(res);
+  });
+
+  api.get('/tracks/:id/lyrics', (req, res) => {
+    const t = store.track(req.params.id);
+    if (!t) throw httpError(404, 'Track not found');
+    res.json({ lyrics: t.lyrics || null, synced: isSyncedLyrics(t.lyrics) });
+  });
+
+  api.put('/tracks/:id/lyrics', (req, res) => {
+    const t = store.track(req.params.id);
+    if (!t) throw httpError(404, 'Track not found');
+    if (t.ownerId !== req.user.id) throw httpError(403, 'Only the uploader can edit lyrics');
+    const raw = req.body?.lyrics;
+    if (raw !== null && typeof raw !== 'string') throw httpError(400, 'lyrics must be a string or null');
+    t.lyrics = cleanLyrics(raw);
+    store.save();
+    res.json({ lyrics: t.lyrics, synced: isSyncedLyrics(t.lyrics) });
   });
 
   api.delete('/tracks/:id', async (req, res) => {
@@ -382,6 +451,103 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
     const tracks = localTracks().filter((t) => t.artist === req.params.name).sort((a, b) => a.album.localeCompare(b.album) || (a.trackNo || 0) - (b.trackNo || 0));
     if (!tracks.length) throw httpError(404, 'Artist not found');
     res.json({ name: req.params.name, cover: tracks.find((t) => t.cover)?.cover || null, tracks: tracks.map((t) => publicTrack(t, req.user)) });
+  });
+
+  // ---------- users: everyone's own uploads ----------
+  api.get('/users', (_req, res) => {
+    const counts = new Map();
+    for (const t of localTracks()) counts.set(t.ownerId, (counts.get(t.ownerId) || 0) + 1);
+    const list = [...counts].map(([id, uploadCount]) => ({ ...publicUser(store.user(id) || { id, username: 'unknown' }), uploadCount }));
+    res.json(list.sort((a, b) => b.uploadCount - a.uploadCount || a.username.localeCompare(b.username)));
+  });
+
+  api.get('/users/:username', (req, res) => {
+    const u = findUser(req.params.username);
+    res.json({
+      user: publicUser(u),
+      followers: followersOf(u).length,
+      following: followingOf(u).filter((id) => store.user(id)).length,
+      isFollowing: followingOf(req.user).includes(u.id),
+      followsYou: followingOf(u).includes(req.user.id),
+      uploads: localTracks().filter((t) => t.ownerId === u.id).sort(byNewest).map((t) => publicTrack(t, req.user)),
+      playlists: store.playlists.filter((p) => p.ownerId === u.id).sort((a, b) => b.updatedAt - a.updatedAt).map((p) => publicPlaylist(p, req.user)),
+    });
+  });
+
+  // ---------- follows ----------
+  api.post('/users/:username/follow', (req, res) => {
+    const u = findUser(req.params.username);
+    if (u.id === req.user.id) throw httpError(400, 'You can\'t follow yourself');
+    const list = followingOf(req.user);
+    if (!list.includes(u.id)) list.push(u.id);
+    store.save();
+    res.json({ followers: followersOf(u).length, isFollowing: true });
+  });
+
+  api.delete('/users/:username/follow', (req, res) => {
+    const u = findUser(req.params.username);
+    req.user.following = followingOf(req.user).filter((id) => id !== u.id);
+    store.save();
+    res.json({ followers: followersOf(u).length, isFollowing: false });
+  });
+
+  api.get('/users/:username/followers', (req, res) => {
+    res.json(followersOf(findUser(req.params.username)).map(publicUser));
+  });
+
+  api.get('/users/:username/following', (req, res) => {
+    res.json(followingOf(findUser(req.params.username)).map((id) => store.user(id)).filter(Boolean).map(publicUser));
+  });
+
+  // ---------- direct messages ----------
+  const dmLimiter = rateLimit({ ...dmLimit, key: (req) => req.user.id });
+  const publicMessage = (m) => ({ id: m.id, from: m.from, to: m.to, text: m.text, createdAt: m.createdAt, read: Boolean(m.readAt) });
+  const between = (a, b) => store.messages.filter((m) => (m.from === a && m.to === b) || (m.from === b && m.to === a));
+
+  api.get('/dms', (req, res) => {
+    const me = req.user.id;
+    const convos = new Map();
+    for (const m of store.messages) {
+      if (m.from !== me && m.to !== me) continue;
+      const other = m.from === me ? m.to : m.from;
+      const c = convos.get(other) || { last: null, unread: 0 };
+      if (!c.last || m.createdAt >= c.last.createdAt) c.last = m;
+      if (m.to === me && !m.readAt) c.unread++;
+      convos.set(other, c);
+    }
+    const list = [...convos].filter(([id]) => store.user(id))
+      .map(([id, c]) => ({ user: publicUser(store.user(id)), last: publicMessage(c.last), unread: c.unread }))
+      .sort((a, b) => b.last.createdAt - a.last.createdAt);
+    res.json(list);
+  });
+
+  api.get('/dms/unread', (req, res) => {
+    res.json({ count: store.messages.filter((m) => m.to === req.user.id && !m.readAt).length });
+  });
+
+  api.get('/dms/:username', (req, res) => {
+    const u = findUser(req.params.username);
+    const msgs = between(req.user.id, u.id).slice(-MAX_DM_HISTORY);
+    let changed = false;
+    for (const m of msgs) if (m.to === req.user.id && !m.readAt) { m.readAt = Date.now(); changed = true; }
+    if (changed) {
+      store.save();
+      io.to(`user:${req.user.id}`).emit('dm:read', { userId: u.id });
+    }
+    res.json({ user: publicUser(u), messages: msgs.map(publicMessage) });
+  });
+
+  api.post('/dms/:username', dmLimiter, (req, res) => {
+    const u = findUser(req.params.username);
+    if (u.id === req.user.id) throw httpError(400, 'You can\'t message yourself');
+    const text = String(req.body?.text || '').trim().slice(0, MAX_DM);
+    if (!text) throw httpError(400, 'Message is empty');
+    const m = { id: newId(), from: req.user.id, to: u.id, text, createdAt: Date.now(), readAt: null };
+    store.messages.push(m);
+    store.save();
+    const out = { ...publicMessage(m), fromUser: publicUser(req.user) };
+    io.to(`user:${u.id}`).to(`user:${req.user.id}`).emit('dm', out);
+    res.status(201).json(publicMessage(m));
   });
 
   // ---------- playlists ----------
@@ -514,6 +680,8 @@ export function createApp({ dataDir, authLimit = { windowMs: 60_000, max: 20 }, 
   api.post('/downloads', async (req, res) => {
     res.status(202).json(await downloader.enqueue(req.user.id, req.body?.url));
   });
+  api.post('/downloads/:id/cancel', (req, res) => res.json(downloader.cancel(req.user.id, req.params.id)));
+  api.post('/downloads/:id/retry', (req, res) => res.json(downloader.retry(req.user.id, req.params.id)));
 
   // ---------- rooms (REST view; live control is over Socket.IO) ----------
   api.get('/rooms/:code', (req, res) => {

@@ -15,6 +15,7 @@ data class Track(
     val source: String,
     val ownerId: String?,
     val liked: Boolean,
+    val ownerName: String? = null,
     /** Set for online search results that haven't been saved as tracks yet. */
     val remote: JSONObject? = null,
 ) {
@@ -31,6 +32,7 @@ data class Track(
             source = o.optString("source", ""),
             ownerId = o.optJSONObject("owner")?.optString("id"),
             liked = o.optBoolean("liked", false),
+            ownerName = o.optJSONObject("owner")?.optStringOrNull("username"),
         )
 
         fun remote(o: JSONObject) = Track(
@@ -85,6 +87,55 @@ data class DownloadJob(val id: String, val title: String, val status: String, va
 
 fun JSONObject.optStringOrNull(key: String): String? =
     if (isNull(key)) null else optString(key).takeIf { it.isNotEmpty() }
+
+/** A listener who has uploaded music (GET /api/users). */
+data class Uploader(val id: String, val username: String, val avatar: String?, val uploadCount: Int) {
+    companion object {
+        fun from(o: JSONObject) = Uploader(o.getString("id"), o.getString("username"), o.optStringOrNull("avatar"), o.optInt("uploadCount"))
+    }
+}
+
+/** publicUser on the server: id, username, avatar, bio. */
+data class Person(val id: String, val username: String, val avatar: String?, val bio: String) {
+    companion object {
+        fun from(o: JSONObject) = Person(o.getString("id"), o.optString("username"), o.optStringOrNull("avatar"), o.optString("bio"))
+    }
+}
+
+/** GET /api/users/:username */
+data class Profile(
+    val user: Person,
+    val followers: Int,
+    val following: Int,
+    val isFollowing: Boolean,
+    val followsYou: Boolean,
+    val uploads: List<Track>,
+    val playlists: List<Playlist>,
+) {
+    companion object {
+        fun from(o: JSONObject) = Profile(
+            Person.from(o.getJSONObject("user")), o.optInt("followers"), o.optInt("following"),
+            o.optBoolean("isFollowing"), o.optBoolean("followsYou"),
+            o.optJSONArray("uploads")?.mapObjects(Track::from) ?: emptyList(),
+            o.optJSONArray("playlists")?.mapObjects(Playlist::from) ?: emptyList(),
+        )
+    }
+}
+
+data class Message(val id: String, val from: String, val to: String, val text: String, val createdAt: Long, val read: Boolean) {
+    companion object {
+        fun from(o: JSONObject) = Message(
+            o.getString("id"), o.optString("from"), o.optString("to"), o.optString("text"),
+            o.optLong("createdAt"), o.optBoolean("read"),
+        )
+    }
+}
+
+data class Conversation(val user: Person, val last: Message, val unread: Int) {
+    companion object {
+        fun from(o: JSONObject) = Conversation(Person.from(o.getJSONObject("user")), Message.from(o.getJSONObject("last")), o.optInt("unread"))
+    }
+}
 
 fun <T> JSONArray.mapObjects(fn: (JSONObject) -> T): List<T> = (0 until length()).map { fn(getJSONObject(it)) }
 

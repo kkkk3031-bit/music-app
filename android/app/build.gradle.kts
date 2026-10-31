@@ -14,8 +14,10 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
-        // Default server for the emulator (host loopback). Changeable on the login screen.
-        buildConfigField("String", "DEFAULT_SERVER", "\"http://10.0.2.2:3020\"")
+        // Default server: emulator host loopback unless overridden with -PcadenceServer=<url>.
+        // Changeable on the login screen.
+        val server = (project.findProperty("cadenceServer") as String?) ?: "http://10.0.2.2:3030"
+        buildConfigField("String", "DEFAULT_SERVER", "\"$server\"")
     }
 
     buildTypes {

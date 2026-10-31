@@ -77,6 +77,7 @@ import com.khaled.cadence.Playlist
 import com.khaled.cadence.RoomClient
 import com.khaled.cadence.Route
 import com.khaled.cadence.Track
+import com.khaled.cadence.Uploader
 import com.khaled.cadence.mapObjects
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -153,6 +154,7 @@ fun HomeScreen(open: (Route) -> Unit) {
         val recent = d.getJSONArray("recentlyPlayed").mapObjects(Track::from)
         val uploads = d.getJSONArray("newUploads").mapObjects(Track::from)
         val playlists = d.getJSONArray("playlists").mapObjects(Playlist::from)
+        val fromFollowing = d.optJSONArray("fromFollowing")?.mapObjects(Track::from) ?: emptyList()
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 QuickTile("Liked Songs", null, Modifier.weight(1f), liked = true) { open(Route.Liked) }
@@ -163,6 +165,14 @@ fun HomeScreen(open: (Route) -> Unit) {
         if (recent.isNotEmpty()) {
             item { SectionTitle("Recently played") }
             item { CardRow(recent) { i -> Playback.playList(recent, i) } }
+        }
+        if (fromFollowing.isNotEmpty()) {
+            item { SectionTitle("From people you follow") }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    itemsIndexed(fromFollowing) { i, t -> MediaCard(t.title, t.ownerName ?: t.artist, t.cover) { Playback.playList(fromFollowing, i) } }
+                }
+            }
         }
         if (playlists.isNotEmpty()) {
             item { SectionTitle("Your playlists") }
@@ -176,8 +186,32 @@ fun HomeScreen(open: (Route) -> Unit) {
             item { SectionTitle("New uploads") }
             item { CardRow(uploads) { i -> Playback.playList(uploads, i) } }
         }
+        item { PeopleToFollow(open) }
         if (recent.isEmpty() && uploads.isEmpty()) {
             item { Empty("Your library is empty. Search for free music or import songs to get started.") }
+        }
+    }
+}
+
+/** Listeners who share music, so people can discover each other from Home. */
+@Composable
+private fun PeopleToFollow(open: (Route) -> Unit) {
+    var people by remember { mutableStateOf<List<Uploader>>(emptyList()) }
+    LaunchedEffect(Unit) { people = runCatching { Api.uploaders() }.getOrDefault(emptyList()).filter { it.id != Api.userId } }
+    if (people.isEmpty()) return
+    Column {
+        SectionTitle("Listeners")
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            items(people, key = { it.id }) { u ->
+                Column(
+                    Modifier.width(88.dp).clip(RoundedCornerShape(10.dp)).clickable { open(Route.UserProfile(u.username)) }.padding(4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Avatar(com.khaled.cadence.Person(u.id, u.username, u.avatar, ""), 76.dp)
+                    Text(u.username, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+                    Text("${u.uploadCount} songs", color = Muted, fontSize = 11.sp)
+                }
+            }
         }
     }
 }
@@ -276,12 +310,20 @@ fun LibraryScreen(open: (Route) -> Unit) {
     var tab by remember { mutableStateOf(0) }
     var playlists by remember { mutableStateOf<List<Playlist>?>(null) }
     var songs by remember { mutableStateOf<List<Track>?>(null) }
+    var myUploads by remember { mutableStateOf<List<Track>?>(null) }
+    var uploaders by remember { mutableStateOf<List<Uploader>>(emptyList()) }
     var creating by remember { mutableStateOf(false) }
     var reload by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(tab, reload) {
-        if (tab == 0) playlists = runCatching { Api.playlists() }.getOrDefault(emptyList())
-        else songs = runCatching { Api.tracks() }.getOrDefault(emptyList())
+        when (tab) {
+            0 -> playlists = runCatching { Api.playlists() }.getOrDefault(emptyList())
+            1 -> {
+                myUploads = runCatching { Api.userUploads(Api.username ?: "") }.getOrDefault(emptyList())
+                uploaders = runCatching { Api.uploaders() }.getOrDefault(emptyList()).filter { it.id != Api.userId }
+            }
+            else -> songs = runCatching { Api.tracks() }.getOrDefault(emptyList())
+        }
     }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -290,7 +332,8 @@ fun LibraryScreen(open: (Route) -> Unit) {
         }
         Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(tab == 0, { tab = 0 }, { Text("Playlists") })
-            FilterChip(tab == 1, { tab = 1 }, { Text("Songs") })
+            FilterChip(tab == 1, { tab = 1 }, { Text("Uploads") })
+            FilterChip(tab == 2, { tab = 2 }, { Text("Songs") })
         }
         LazyColumn(contentPadding = PaddingValues(12.dp)) {
             if (tab == 0) {
@@ -310,6 +353,27 @@ fun LibraryScreen(open: (Route) -> Unit) {
                         Column(Modifier.padding(start = 12.dp)) {
                             Text(p.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text("Playlist · ${p.trackCount} songs", color = Muted, fontSize = 13.sp)
+                        }
+                    }
+                }
+            } else if (tab == 1) {
+                val list = myUploads
+                item { SectionTitle("Your uploads" + (list?.let { " · ${it.size}" } ?: "")) }
+                if (list == null) item { Empty("Loading…") }
+                else if (list.isEmpty()) item { Empty("You haven't uploaded any music yet. Use Import to upload from this phone.") }
+                else {
+                    item { PlayShuffleBar(list) }
+                    itemsIndexed(list) { i, t -> TrackRow(t, { Playback.playList(list, i) }) }
+                }
+                if (uploaders.isNotEmpty()) {
+                    item { SectionTitle("Uploads by other listeners") }
+                    items(uploaders) { u ->
+                        Row(Modifier.fillMaxWidth().clickable { open(Route.UserProfile(u.username)) }.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Avatar(com.khaled.cadence.Person(u.id, u.username, u.avatar, ""), 56.dp)
+                            Column(Modifier.padding(start = 12.dp)) {
+                                Text(u.username, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("${u.uploadCount} upload" + (if (u.uploadCount == 1) "" else "s"), color = Muted, fontSize = 13.sp)
+                            }
                         }
                     }
                 }
@@ -591,19 +655,5 @@ private fun RoomDetail(r: JSONObject) {
                 }) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = Accent) }
             }
         }
-    }
-}
-
-@Composable
-fun ProfileScreen(onLogout: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(24.dp)) {
-        Box(Modifier.size(88.dp).clip(CircleShape).background(AccentGradient), contentAlignment = Alignment.Center) {
-            Text((Api.username ?: "?").take(1).uppercase(), fontSize = 36.sp, fontWeight = FontWeight.ExtraBold, color = androidx.compose.ui.graphics.Color.White)
-        }
-        Text(Api.username ?: "", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(top = 12.dp))
-        Text(Api.baseUrl, color = Muted)
-        Spacer(Modifier.height(24.dp))
-        OutlinedButton(onClick = onLogout, colors = ButtonDefaults.outlinedButtonColors()) { Text("Log out") }
-        Spacer(Modifier.aspectRatio(1f))
     }
 }

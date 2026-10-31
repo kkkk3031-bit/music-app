@@ -27,7 +27,14 @@ export class Player extends EventTarget {
     const v = Number(localStorage.getItem(VOL_KEY));
     audio.volume = Number.isFinite(v) && localStorage.getItem(VOL_KEY) !== null ? v : 0.8;
 
-    audio.addEventListener('timeupdate', () => this.emit('time'));
+    this.preloader = new Audio();
+    this.preloader.preload = 'auto';
+    this.preloader.muted = true;
+    this.preloadedId = null;
+    audio.addEventListener('timeupdate', () => {
+      this.emit('time');
+      this.maybePreload();
+    });
     audio.addEventListener('durationchange', () => this.emit('time'));
     audio.addEventListener('play', () => this.emit('state'));
     audio.addEventListener('pause', () => this.emit('state'));
@@ -126,6 +133,20 @@ export class Player extends EventTarget {
     post('/me/played', { trackId: t.id, playlistId: this.context?.playlistId }).catch(() => {});
     this.updateMediaSession();
     this.emit('change');
+  }
+
+  // Warm the browser cache for the next song ~20s before this one ends, so
+  // the transition starts without a buffering gap.
+  maybePreload() {
+    if (this.room || this.repeat === 'one') return;
+    const left = (this.audio.duration || 0) - this.audio.currentTime;
+    if (!(left > 0 && left < 20)) return;
+    const nextIdx = this.index < this.queue.length - 1 ? this.index + 1 : this.repeat === 'all' ? 0 : -1;
+    const next = this.queue[nextIdx];
+    if (!next || next.id === this.preloadedId || next.id === this.current?.id) return;
+    this.preloadedId = next.id;
+    this.preloader.src = streamSrc(next);
+    this.preloader.load();
   }
 
   tryPlay() {
