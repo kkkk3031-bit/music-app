@@ -154,6 +154,7 @@ fun HomeScreen(open: (Route) -> Unit) {
         val recent = d.getJSONArray("recentlyPlayed").mapObjects(Track::from)
         val uploads = d.getJSONArray("newUploads").mapObjects(Track::from)
         val playlists = d.getJSONArray("playlists").mapObjects(Playlist::from)
+        val fromFollowing = d.optJSONArray("fromFollowing")?.mapObjects(Track::from) ?: emptyList()
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 QuickTile("Liked Songs", null, Modifier.weight(1f), liked = true) { open(Route.Liked) }
@@ -164,6 +165,14 @@ fun HomeScreen(open: (Route) -> Unit) {
         if (recent.isNotEmpty()) {
             item { SectionTitle("Recently played") }
             item { CardRow(recent) { i -> Playback.playList(recent, i) } }
+        }
+        if (fromFollowing.isNotEmpty()) {
+            item { SectionTitle("From people you follow") }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    itemsIndexed(fromFollowing) { i, t -> MediaCard(t.title, t.ownerName ?: t.artist, t.cover) { Playback.playList(fromFollowing, i) } }
+                }
+            }
         }
         if (playlists.isNotEmpty()) {
             item { SectionTitle("Your playlists") }
@@ -177,8 +186,32 @@ fun HomeScreen(open: (Route) -> Unit) {
             item { SectionTitle("New uploads") }
             item { CardRow(uploads) { i -> Playback.playList(uploads, i) } }
         }
+        item { PeopleToFollow(open) }
         if (recent.isEmpty() && uploads.isEmpty()) {
             item { Empty("Your library is empty. Search for free music or import songs to get started.") }
+        }
+    }
+}
+
+/** Listeners who share music, so people can discover each other from Home. */
+@Composable
+private fun PeopleToFollow(open: (Route) -> Unit) {
+    var people by remember { mutableStateOf<List<Uploader>>(emptyList()) }
+    LaunchedEffect(Unit) { people = runCatching { Api.uploaders() }.getOrDefault(emptyList()).filter { it.id != Api.userId } }
+    if (people.isEmpty()) return
+    Column {
+        SectionTitle("Listeners")
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            items(people, key = { it.id }) { u ->
+                Column(
+                    Modifier.width(88.dp).clip(RoundedCornerShape(10.dp)).clickable { open(Route.UserProfile(u.username)) }.padding(4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Avatar(com.khaled.cadence.Person(u.id, u.username, u.avatar, ""), 76.dp)
+                    Text(u.username, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+                    Text("${u.uploadCount} songs", color = Muted, fontSize = 11.sp)
+                }
+            }
         }
     }
 }
@@ -335,8 +368,8 @@ fun LibraryScreen(open: (Route) -> Unit) {
                 if (uploaders.isNotEmpty()) {
                     item { SectionTitle("Uploads by other listeners") }
                     items(uploaders) { u ->
-                        Row(Modifier.fillMaxWidth().clickable { open(Route.UserUploads(u.username)) }.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Cover(u.avatar, 56.dp, CircleShape)
+                        Row(Modifier.fillMaxWidth().clickable { open(Route.UserProfile(u.username)) }.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Avatar(com.khaled.cadence.Person(u.id, u.username, u.avatar, ""), 56.dp)
                             Column(Modifier.padding(start = 12.dp)) {
                                 Text(u.username, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text("${u.uploadCount} upload" + (if (u.uploadCount == 1) "" else "s"), color = Muted, fontSize = 13.sp)
@@ -438,24 +471,6 @@ fun LikedScreen(back: () -> Unit) {
         val list = tracks
         if (list == null) item { Empty("Loading…") }
         else if (list.isEmpty()) item { Empty("Songs you like will appear here.") }
-        else {
-            item { PlayShuffleBar(list) }
-            itemsIndexed(list) { i, t -> TrackRow(t, { Playback.playList(list, i) }) }
-        }
-    }
-}
-
-@Composable
-fun UserUploadsScreen(username: String, back: () -> Unit) {
-    var tracks by remember { mutableStateOf<List<Track>?>(null) }
-    LaunchedEffect(username) { tracks = runCatching { Api.userUploads(username) }.getOrDefault(emptyList()) }
-    LazyColumn(contentPadding = PaddingValues(12.dp)) {
-        item { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } }
-        item { Text("Uploads", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp)) }
-        item { Text(username, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(4.dp)) }
-        val list = tracks
-        if (list == null) item { Empty("Loading…") }
-        else if (list.isEmpty()) item { Empty("$username hasn't uploaded any music yet.") }
         else {
             item { PlayShuffleBar(list) }
             itemsIndexed(list) { i, t -> TrackRow(t, { Playback.playList(list, i) }) }
@@ -640,19 +655,5 @@ private fun RoomDetail(r: JSONObject) {
                 }) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = Accent) }
             }
         }
-    }
-}
-
-@Composable
-fun ProfileScreen(onLogout: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(24.dp)) {
-        Box(Modifier.size(88.dp).clip(CircleShape).background(AccentGradient), contentAlignment = Alignment.Center) {
-            Text((Api.username ?: "?").take(1).uppercase(), fontSize = 36.sp, fontWeight = FontWeight.ExtraBold, color = androidx.compose.ui.graphics.Color.White)
-        }
-        Text(Api.username ?: "", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(top = 12.dp))
-        Text(Api.baseUrl, color = Muted)
-        Spacer(Modifier.height(24.dp))
-        OutlinedButton(onClick = onLogout, colors = ButtonDefaults.outlinedButtonColors()) { Text("Log out") }
-        Spacer(Modifier.aspectRatio(1f))
     }
 }
